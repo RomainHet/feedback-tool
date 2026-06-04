@@ -94,11 +94,24 @@
     if (!el) return false;
     if (el.hasAttribute && el.hasAttribute('data-feedback-context-ignore')) return false;
     if (el.tagName === 'DIALOG') return el.open === true;
-    if (el.getAttribute('aria-hidden') === 'true') return false;
-    if (el.hasAttribute('hidden')) return false;
-    var s = el.ownerDocument && el.ownerDocument.defaultView && el.ownerDocument.defaultView.getComputedStyle(el);
-    if (!s) return true;
-    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // Walk up the tree — modals are often hidden via their backdrop/wrapper
+    // (e.g. <div class="backdrop" aria-hidden="true"><div role="dialog">…),
+    // so we need to check ancestors too, not just the dialog element itself.
+    var node = el;
+    var win = el.ownerDocument && el.ownerDocument.defaultView;
+    while (node && node.nodeType === 1) {
+      if (node.getAttribute && node.getAttribute('aria-hidden') === 'true') return false;
+      if (node.hasAttribute && node.hasAttribute('hidden')) return false;
+      if (win) {
+        var s = win.getComputedStyle(node);
+        if (s && (s.display === 'none' || s.visibility === 'hidden')) return false;
+      }
+      node = node.parentElement;
+    }
+    // Belt and suspenders: if after all that the element has no rendered
+    // size, treat as hidden (catches some opacity:0 / transform tricks).
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
     return true;
   }
 

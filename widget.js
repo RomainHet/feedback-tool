@@ -497,28 +497,33 @@
       return a.localeCompare(b);
     });
     paths.forEach(function (p) {
-      var group = document.createElement('div');
-      group.className = '__fw_panel_group';
-      var label = document.createElement('div');
-      label.className = '__fw_panel_path';
-      var pathSpan = document.createElement('span');
-      pathSpan.className = '__fw_panel_path_text';
-      pathSpan.textContent = p;
-      label.appendChild(pathSpan);
-      if (p === location.pathname) {
-        var hereTag = document.createElement('span');
-        hereTag.className = '__fw_panel_path_here';
-        hereTag.textContent = 'this page';
-        label.appendChild(hereTag);
+      var isHere = (p === location.pathname);
+      var group = document.createElement('section');
+      group.className = '__fw_panel_group' + (isHere ? ' __fw_panel_group_here' : '');
+
+      // Header: optional "This page" eyebrow, then path + count on one row.
+      var head = document.createElement('header');
+      head.className = '__fw_panel_path';
+      var inner = '';
+      if (isHere) {
+        inner += '<div class="__fw_panel_path_eyebrow">This page</div>';
       }
-      var countTag = document.createElement('span');
-      countTag.className = '__fw_panel_path_count';
-      countTag.textContent = String(groups[p].length);
-      label.appendChild(countTag);
-      group.appendChild(label);
+      inner +=
+        '<div class="__fw_panel_path_row">' +
+          '<span class="__fw_panel_path_text" title="' + escapeHtml(p) + '">' + escapeHtml(p) + '</span>' +
+          '<span class="__fw_panel_path_count">' + groups[p].length + '</span>' +
+        '</div>';
+      head.innerHTML = inner;
+      group.appendChild(head);
+
+      // Comments inside the card, separated by adjacent-sibling dividers.
+      var items = document.createElement('div');
+      items.className = '__fw_panel_items';
       groups[p].forEach(function (c) {
-        group.appendChild(makePanelItem(c));
+        items.appendChild(makePanelItem(c));
       });
+      group.appendChild(items);
+
       panelBody.appendChild(group);
     });
   }
@@ -536,11 +541,11 @@
     try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
     item.innerHTML =
       '<div class="__fw_panel_item_head">' +
-        '<span class="__fw_avatar" style="background:' + avatarColor + '" aria-hidden="true">' +
+        '<span class="__fw_avatar __fw_avatar_sm" style="background:' + avatarColor + '" aria-hidden="true">' +
           escapeHtml(avatarChar) +
         '</span>' +
-        '<span class="__fw_author">' + escapeHtml(authorName) + '</span>' +
-        '<span class="__fw_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
+        '<span class="__fw_panel_item_author">' + escapeHtml(authorName) + '</span>' +
+        '<span class="__fw_panel_item_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
       '</div>' +
       '<div class="__fw_panel_item_text">' + escapeHtml(c.text) + '</div>';
     item.addEventListener('click', function () { jumpToComment(c); });
@@ -607,7 +612,9 @@
       hash |= 0;
     }
     var hue = Math.abs(hash) % 360;
-    return 'hsl(' + hue + ', 62%, 50%)';
+    // Softer, more muted than full-chroma — readable against any bubble bg
+    // and less aggressive when many avatars stack in the panel.
+    return 'hsl(' + hue + ', 52%, 54%)';
   }
 
   function formatRelTime(iso) {
@@ -849,46 +856,73 @@
       '  cursor: pointer !important; transition: background 0.15s, color 0.15s; }',
       '.__fw_panel_close:hover { background: #f1f5f9 !important; color: #0f172a !important; }',
 
-      '.__fw_panel_body { flex: 1; overflow-y: auto; padding: 12px 12px 16px; }',
-      '.__fw_panel_empty { padding: 32px 16px; text-align: center; color: #64748b; }',
+      '.__fw_panel_body { flex: 1; overflow-y: auto; padding: 14px 14px 20px; background: #fafbfc; }',
+      '.__fw_panel_empty { padding: 40px 16px; text-align: center; color: #64748b; }',
       '.__fw_panel_empty_title { font-size: 14px !important; font-weight: 600 !important;',
       '  color: #0f172a !important; margin-bottom: 6px; }',
       '.__fw_panel_empty_sub { font-size: 13px !important; line-height: 1.5; }',
 
-      '.__fw_panel_group { margin-bottom: 18px; }',
-      '.__fw_panel_path { display: flex; align-items: center; gap: 6px;',
-      '  padding: 8px 6px; margin-bottom: 2px;',
-      '  font-size: 11px !important; font-weight: 600 !important;',
-      '  color: #64748b !important; text-transform: uppercase; letter-spacing: 0.04em; }',
-      '.__fw_panel_path_text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;',
-      '  text-transform: none; letter-spacing: 0; color: #334155 !important;',
-      '  font-size: 12px !important; font-weight: 600 !important;',
-      '  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }',
-      '.__fw_panel_path_here { background: #dbeafe !important; color: #1d4ed8 !important;',
-      '  padding: 2px 8px !important; border-radius: 999px !important;',
-      '  font-size: 10px !important; font-weight: 600 !important;',
-      '  letter-spacing: 0.04em !important; text-transform: uppercase !important; }',
-      '.__fw_panel_path_count { background: #f1f5f9 !important; color: #475569 !important;',
-      '  padding: 2px 8px !important; border-radius: 999px !important;',
-      '  font-size: 11px !important; font-weight: 600 !important;',
-      '  text-transform: none; letter-spacing: 0; }',
+      // --- Group card: each path is a self-contained card ---
+      '.__fw_panel_group { background: #ffffff !important;',
+      '  border: 1px solid rgba(15, 23, 42, 0.08) !important;',
+      '  border-radius: 12px !important; margin-bottom: 12px !important;',
+      '  overflow: hidden; }',
+      '.__fw_panel_group_here { border-color: rgba(37, 99, 235, 0.35) !important;',
+      '  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08) !important; }',
 
+      // --- Group header (path label) ---
+      '.__fw_panel_path { padding: 12px 14px !important; background: #f8fafc !important;',
+      '  border-bottom: 1px solid rgba(15, 23, 42, 0.06) !important; }',
+      '.__fw_panel_group_here .__fw_panel_path { background: #eff6ff !important;',
+      '  border-bottom-color: rgba(37, 99, 235, 0.18) !important; }',
+      '.__fw_panel_path_eyebrow { display: block; font-size: 10px !important;',
+      '  font-weight: 700 !important; color: #2563eb !important;',
+      '  text-transform: uppercase !important; letter-spacing: 0.08em !important;',
+      '  margin-bottom: 5px !important; font-family: ' + FONT + ' !important; }',
+      '.__fw_panel_path_row { display: flex !important; align-items: center !important; gap: 8px !important; }',
+      '.__fw_panel_path_text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;',
+      '  font-size: 12px !important; font-weight: 600 !important; color: #334155 !important;',
+      '  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }',
+      '.__fw_panel_group_here .__fw_panel_path_text { color: #1e3a8a !important; }',
+      '.__fw_panel_path_count { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;',
+      '  min-width: 22px; height: 22px; padding: 0 8px;',
+      '  background: rgba(15, 23, 42, 0.06) !important; color: #475569 !important;',
+      '  border-radius: 999px !important;',
+      '  font-size: 11px !important; font-weight: 700 !important;',
+      '  font-family: ' + FONT + ' !important; line-height: 1 !important; }',
+      '.__fw_panel_group_here .__fw_panel_path_count { background: rgba(37, 99, 235, 0.15) !important;',
+      '  color: #1d4ed8 !important; }',
+
+      // --- Comment rows inside a group ---
+      '.__fw_panel_items { background: #ffffff !important; }',
       '.__fw_panel_item { display: block !important; width: 100% !important;',
       '  text-align: left !important; background: transparent !important;',
-      '  border: 1px solid transparent !important; border-radius: 10px !important;',
-      '  padding: 10px 12px !important; margin-bottom: 4px !important;',
+      '  border: 0 !important; border-radius: 0 !important;',
+      '  padding: 12px 14px !important; margin: 0 !important;',
       '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
-      '  box-shadow: none !important;',
-      '  transition: background 0.12s, border-color 0.12s, transform 0.12s; }',
-      '.__fw_panel_item:hover { background: #f8fafc !important; border-color: rgba(15, 23, 42, 0.06) !important; }',
-      '.__fw_panel_item:active { transform: scale(0.99); }',
+      '  box-shadow: none !important; position: relative;',
+      '  transition: background 0.12s; }',
+      '.__fw_panel_item + .__fw_panel_item { border-top: 1px solid rgba(15, 23, 42, 0.05) !important; }',
+      '.__fw_panel_item:hover { background: #f8fafc !important; }',
+      '.__fw_panel_group_here .__fw_panel_item:hover { background: #eff6ff !important; }',
+
+      // --- Smaller avatar for the panel context ---
+      '.__fw_avatar_sm { width: 22px !important; height: 22px !important; font-size: 10px !important; }',
+
       '.__fw_panel_item_head { display: flex !important; align-items: center !important;',
-      '  gap: 8px !important; margin-bottom: 6px !important; }',
-      '.__fw_panel_item_text { font-size: 13px !important; color: #334155 !important;',
-      '  line-height: 1.5 !important; margin: 0 !important;',
+      '  gap: 8px !important; margin-bottom: 4px !important; }',
+      '.__fw_panel_item_author { font-size: 13px !important; font-weight: 600 !important;',
+      '  color: #0f172a !important; line-height: 1.2 !important;',
+      '  font-family: ' + FONT + ' !important;',
+      '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '.__fw_panel_item_when { margin-left: auto !important; flex-shrink: 0;',
+      '  font-size: 11px !important; color: #94a3b8 !important;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_panel_item_text { font-size: 13px !important; color: #475569 !important;',
+      '  line-height: 1.5 !important; margin: 0 0 0 30px !important;',
       '  display: -webkit-box !important; -webkit-line-clamp: 2 !important;',
       '  -webkit-box-orient: vertical !important; overflow: hidden !important;',
-      '  word-wrap: break-word !important; }',
+      '  word-wrap: break-word !important; font-family: ' + FONT + ' !important; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

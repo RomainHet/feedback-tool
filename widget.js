@@ -49,6 +49,19 @@
   if (document.body) attachPinLayer();
   else document.addEventListener('DOMContentLoaded', attachPinLayer);
 
+  // Visual indicators while comment mode is active: a viewport-edge border and
+  // a top-left badge. Toggled via the html.__fw_commenting class — see CSS.
+  var modeBorder = document.createElement('div');
+  modeBorder.className = '__fw_mode_border';
+  root.appendChild(modeBorder);
+  var modeBadge = document.createElement('div');
+  modeBadge.className = '__fw_mode_badge';
+  modeBadge.innerHTML =
+    '<span class="__fw_mode_dot"></span>' +
+    '<span>Comment mode</span>' +
+    '<span class="__fw_mode_hint">Esc to exit</span>';
+  root.appendChild(modeBadge);
+
   var toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = '__fw_toggle';
@@ -90,6 +103,31 @@
     if (e.target.closest('#__fw_root .__fw_toggle')) return;
     closeOpenBubble();
   });
+
+  // Esc unwinds widget state in order: composer → open bubble → exit mode.
+  // Captured at the document level so the host page's keydown handlers don't
+  // swallow it before we get a chance to react.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' && e.keyCode !== 27) return;
+    if (STATE.pending) {
+      STATE.pending.el.remove();
+      STATE.pending = null;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (STATE.openBubble) {
+      closeOpenBubble();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (STATE.active) {
+      setActive(false);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
 
   // Re-render on route changes.
   var origPush = history.pushState;
@@ -143,6 +181,7 @@
     wrap.innerHTML =
       '<div class="__fw_pin __fw_pin_new">+</div>' +
       '<form class="__fw_popover">' +
+      '<div class="__fw_popover_head">New comment</div>' +
       '<input class="__fw_name" placeholder="Your name" maxlength="120" />' +
       '<textarea class="__fw_text" placeholder="Leave a comment" rows="3" maxlength="4000"></textarea>' +
       '<div class="__fw_actions">' +
@@ -304,46 +343,140 @@
   }
 
   function injectStyles() {
+    // Critical declarations use !important to defend against host-page CSS
+    // (e.g. global `button { color: ... }` rules that would erase our text).
+    var FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
     var css = [
+      // --- Layer scaffolding ---
       '#__fw_root { position: fixed; inset: 0; pointer-events: none; z-index: 2147483600; }',
-      '#__fw_root *, #__fw_pins * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }',
+      '#__fw_root *, #__fw_pins * { box-sizing: border-box; font-family: ' + FONT + '; }',
       '#__fw_pins { position: absolute; top: 0; left: 0; width: 0; height: 0; pointer-events: none; z-index: 2147483599; }',
+
+      // --- Toggle button ---
       '.__fw_toggle { position: fixed; right: 16px; bottom: 16px; pointer-events: auto;',
-      '  background: #111; color: #fff; border: 0; border-radius: 999px;',
-      '  padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer;',
-      '  box-shadow: 0 4px 14px rgba(0,0,0,0.18); }',
-      '.__fw_toggle_on { background: #2563eb; }',
-      'html.__fw_commenting, html.__fw_commenting body { cursor: crosshair !important; }',
+      '  background: #0f172a !important; color: #ffffff !important;',
+      '  border: 0 !important; border-radius: 999px !important;',
+      '  padding: 10px 18px !important; font-size: 13px !important; font-weight: 600 !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25) !important;',
+      '  transition: background 0.15s, transform 0.15s; }',
+      '.__fw_toggle:hover { background: #1e293b !important; transform: translateY(-1px); }',
+      '.__fw_toggle_on { background: #2563eb !important; box-shadow: 0 8px 24px rgba(37, 99, 235, 0.4) !important; }',
+      '.__fw_toggle_on:hover { background: #1d4ed8 !important; }',
+
+      // --- Comment-mode indicators (border + top-left badge) ---
+      '.__fw_mode_border, .__fw_mode_badge { display: none !important; }',
+      'html.__fw_commenting .__fw_mode_border { display: block !important; }',
+      'html.__fw_commenting .__fw_mode_badge { display: inline-flex !important; }',
+      '.__fw_mode_border { position: fixed; inset: 0; pointer-events: none; z-index: 2147483598;',
+      '  box-shadow: inset 0 0 0 3px #2563eb, inset 0 0 0 6px rgba(37, 99, 235, 0.18); }',
+      '.__fw_mode_badge { position: fixed; top: 16px; left: 16px; pointer-events: none; z-index: 2147483602;',
+      '  align-items: center; gap: 8px;',
+      '  background: #2563eb !important; color: #ffffff !important;',
+      '  padding: 8px 14px !important; border-radius: 999px !important;',
+      '  font-size: 12px !important; font-weight: 600 !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.4) !important; }',
+      '.__fw_mode_dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;',
+      '  background: #ffffff; animation: __fw_pulse 1.4s ease-in-out infinite; }',
+      '.__fw_mode_hint { opacity: 0.75; font-weight: 500 !important; margin-left: 2px; }',
+      '@keyframes __fw_pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }',
+
+      // --- Cursor: crosshair on the host page, sensible cursors inside widget UI ---
+      'html.__fw_commenting, html.__fw_commenting * { cursor: crosshair !important; }',
+      'html.__fw_commenting #__fw_root, html.__fw_commenting #__fw_root *,',
+      'html.__fw_commenting #__fw_pins, html.__fw_commenting #__fw_pins * { cursor: auto !important; }',
+      'html.__fw_commenting .__fw_toggle, html.__fw_commenting .__fw_pin,',
+      'html.__fw_commenting .__fw_cancel, html.__fw_commenting .__fw_submit,',
+      'html.__fw_commenting .__fw_delete { cursor: pointer !important; }',
+      'html.__fw_commenting .__fw_name, html.__fw_commenting .__fw_text { cursor: text !important; }',
+
+      // --- Pin placement wrapper ---
       '.__fw_placed { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; z-index: 2147483601; }',
-      '.__fw_pin { width: 28px; height: 28px; border-radius: 999px 999px 999px 2px;',
-      '  background: #2563eb; color: #fff; border: 2px solid #fff;',
-      '  font-size: 12px; font-weight: 700; cursor: pointer;',
+
+      // --- Pin (numbered bubble / "+") ---
+      '.__fw_pin { width: 30px !important; height: 30px !important;',
+      '  border-radius: 999px 999px 999px 2px !important;',
+      '  background: #2563eb !important; color: #ffffff !important;',
+      '  border: 2px solid #ffffff !important;',
+      '  font-size: 12px !important; font-weight: 700 !important;',
+      '  font-family: ' + FONT + ' !important;',
+      '  cursor: pointer; padding: 0 !important;',
       '  display: flex; align-items: center; justify-content: center;',
-      '  box-shadow: 0 2px 6px rgba(0,0,0,0.25); padding: 0; }',
-      '.__fw_pin_new { background: #f59e0b; }',
-      '.__fw_popover, .__fw_bubble { position: absolute; left: 50%; top: 4px;',
-      '  transform: translateX(-50%); margin-top: 4px;',
-      '  background: #fff; color: #111; border: 1px solid #e5e7eb;',
-      '  border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);',
-      '  padding: 10px; width: 260px; pointer-events: auto; }',
-      '.__fw_popover input, .__fw_popover textarea {',
-      '  display: block; width: 100%; padding: 6px 8px; margin: 0 0 6px 0;',
-      '  border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px;',
-      '  font-family: inherit; resize: vertical; }',
-      '.__fw_actions { display: flex; gap: 6px; justify-content: flex-end; }',
-      '.__fw_actions button { padding: 6px 10px; font-size: 12px; border-radius: 6px;',
-      '  border: 1px solid #d1d5db; background: #fff; cursor: pointer; }',
-      '.__fw_submit { background: #2563eb; color: #fff; border-color: #2563eb; }',
-      '.__fw_submit[disabled] { opacity: 0.6; cursor: default; }',
-      '.__fw_author { font-size: 12px; font-weight: 600; margin-bottom: 4px; }',
-      '.__fw_text_view { font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }',
-      '.__fw_bubble_foot { display: flex; align-items: center; justify-content: space-between;',
-      '  margin-top: 6px; gap: 6px; }',
-      '.__fw_meta { font-size: 11px; color: #6b7280; }',
-      '.__fw_delete { font-size: 11px; color: #b91c1c; background: transparent;',
-      '  border: 0; padding: 2px 6px; border-radius: 4px; cursor: pointer; }',
-      '.__fw_delete:hover { background: #fee2e2; }',
-      '.__fw_delete[disabled] { opacity: 0.6; cursor: default; }',
+      '  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4) !important; }',
+      '.__fw_pin_new { background: #f59e0b !important;',
+      '  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.45) !important; }',
+
+      // --- Composer + bubble container ---
+      '.__fw_popover, .__fw_bubble { position: absolute; left: 50%; top: 6px;',
+      '  transform: translateX(-50%); margin-top: 6px;',
+      '  background: #ffffff !important; color: #0f172a !important;',
+      '  border: 1px solid rgba(15, 23, 42, 0.06) !important;',
+      '  border-radius: 12px !important;',
+      '  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18), 0 2px 8px rgba(15, 23, 42, 0.08) !important;',
+      '  padding: 14px !important; width: 300px !important; pointer-events: auto;',
+      '  font-family: ' + FONT + ' !important; }',
+
+      // --- Composer header ---
+      '.__fw_popover_head { font-size: 11px !important; font-weight: 600 !important;',
+      '  color: #64748b !important; text-transform: uppercase; letter-spacing: 0.06em;',
+      '  margin: 0 0 10px 0 !important; font-family: ' + FONT + ' !important; }',
+
+      // --- Inputs ---
+      '.__fw_name, .__fw_text {',
+      '  display: block !important; width: 100% !important;',
+      '  padding: 9px 11px !important; margin: 0 0 10px 0 !important;',
+      '  border: 1px solid #cbd5e1 !important; border-radius: 8px !important;',
+      '  font-size: 13px !important; font-family: ' + FONT + ' !important;',
+      '  color: #0f172a !important; background: #ffffff !important;',
+      '  outline: 0 !important; box-shadow: none !important;',
+      '  line-height: 1.4 !important;',
+      '  transition: border-color 0.15s, box-shadow 0.15s; }',
+      '.__fw_text { resize: vertical !important; min-height: 78px !important; }',
+      '.__fw_name:focus, .__fw_text:focus {',
+      '  border-color: #2563eb !important;',
+      '  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18) !important; }',
+      '.__fw_name::placeholder, .__fw_text::placeholder { color: #94a3b8 !important; opacity: 1 !important; }',
+
+      // --- Action row ---
+      '.__fw_actions { display: flex !important; gap: 8px !important;',
+      '  justify-content: flex-end !important; align-items: center !important;',
+      '  margin: 4px 0 0 0 !important; padding: 0 !important; }',
+      '.__fw_cancel {',
+      '  padding: 8px 14px !important; font-size: 13px !important; font-weight: 500 !important;',
+      '  border-radius: 8px !important; border: 0 !important;',
+      '  background: transparent !important; color: #64748b !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: none !important; }',
+      '.__fw_cancel:hover { background: #f1f5f9 !important; color: #0f172a !important; }',
+      '.__fw_submit {',
+      '  padding: 8px 18px !important; font-size: 13px !important; font-weight: 600 !important;',
+      '  border-radius: 8px !important; border: 0 !important;',
+      '  background: #2563eb !important; color: #ffffff !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35) !important;',
+      '  transition: background 0.15s; }',
+      '.__fw_submit:hover { background: #1d4ed8 !important; }',
+      '.__fw_submit[disabled] { opacity: 0.6 !important; cursor: default !important; background: #2563eb !important; }',
+
+      // --- Bubble (existing comment view) ---
+      '.__fw_author { font-size: 12px !important; font-weight: 600 !important;',
+      '  color: #0f172a !important; margin: 0 0 4px 0 !important;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_text_view { font-size: 13px !important; color: #334155 !important;',
+      '  white-space: pre-wrap; word-wrap: break-word;',
+      '  line-height: 1.5 !important; margin: 0 !important;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_bubble_foot { display: flex !important; align-items: center !important;',
+      '  justify-content: space-between !important; margin-top: 10px !important; gap: 6px !important;',
+      '  padding-top: 8px !important; border-top: 1px solid rgba(15, 23, 42, 0.06) !important; }',
+      '.__fw_meta { font-size: 11px !important; color: #94a3b8 !important;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_delete { font-size: 11px !important; font-weight: 500 !important;',
+      '  color: #b91c1c !important; background: transparent !important;',
+      '  border: 0 !important; padding: 4px 8px !important; border-radius: 6px !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important; box-shadow: none !important; }',
+      '.__fw_delete:hover { background: #fee2e2 !important; }',
+      '.__fw_delete[disabled] { opacity: 0.6 !important; cursor: default !important; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

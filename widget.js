@@ -410,6 +410,9 @@
     closeOpenBubble();
     var bubble = buildBubble(root);
     wrap.appendChild(bubble);
+    // Force the wrap visible even when comment mode is off — this is what
+    // makes panel-jump work without flipping the user into comment mode.
+    wrap.classList.add('__fw_placed_visible');
     STATE.openBubble = wrap;
     STATE.openBubbleRoot = root;
   }
@@ -605,6 +608,7 @@
     if (!STATE.openBubble) return;
     var b = STATE.openBubble.querySelector('.__fw_bubble');
     if (b) b.remove();
+    STATE.openBubble.classList.remove('__fw_placed_visible');
     STATE.openBubble = null;
     STATE.openBubbleRoot = null;
   }
@@ -780,6 +784,9 @@
     if (!wrap) return;
     var pin = wrap.querySelector('.__fw_pin');
     if (!pin) return;
+    // Pins are hidden outside comment mode; make this one visible before we
+    // try to scroll to it (scrollIntoView on a display:none element no-ops).
+    wrap.classList.add('__fw_placed_visible');
     try {
       pin.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } catch (_) {
@@ -787,7 +794,9 @@
     }
     pin.classList.add('__fw_pin_focus');
     setTimeout(function () { pin.classList.remove('__fw_pin_focus'); }, 1400);
-    // Auto-open the bubble after the scroll settles.
+    // Auto-open the bubble after the scroll settles — openBubbleFor will
+    // also set __fw_placed_visible, so the wrap stays visible until the
+    // bubble is closed.
     setTimeout(function () { pin.click(); }, 380);
   }
 
@@ -948,7 +957,14 @@
       'html.__fw_commenting .__fw_name, html.__fw_commenting .__fw_text { cursor: text !important; }',
 
       // --- Pin placement wrapper ---
-      '.__fw_placed { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; z-index: 2147483601; }',
+      // Pins are hidden by default; visible only when comment mode is on, or
+      // when a specific pin is focused/has its bubble open (panel-jump). The
+      // dock badge keeps showing the total count as a discovery signal.
+      '.__fw_placed { position: absolute; transform: translate(-50%, -100%); pointer-events: auto;',
+      '  z-index: 2147483601; display: none; }',
+      'html.__fw_commenting .__fw_placed,',
+      '.__fw_placed.__fw_placed_visible,',
+      '.__fw_placed.__fw_pending { display: block; }',
 
       // --- Pin (numbered bubble / "+") ---
       '.__fw_pin { width: 30px !important; height: 30px !important;',

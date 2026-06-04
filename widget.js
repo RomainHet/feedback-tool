@@ -30,9 +30,52 @@
     replyingTo: null,    // id of the root currently being replied to (or null)
     panelOpen: false,
     allPins: [],         // every comment across the project (for the All-comments panel)
+    context: null,       // sub-context label set via window.FeedbackWidget.setContext (e.g. "modal:trial-456")
   };
 
+  // Composite key used as `pathname` when storing/fetching. Lets a single
+  // route host multiple comment surfaces (modals, drawers, tabs) — the host
+  // app declares which surface is open via setContext(label) and the widget
+  // scopes pins accordingly. Stored verbatim in Supabase's `pathname` column.
+  // Separator chosen so it can't collide with a real pathname character.
+  var CONTEXT_SEP = '|';
+  function currentPath() {
+    return location.pathname + (STATE.context ? CONTEXT_SEP + STATE.context : '');
+  }
+
   injectStyles();
+
+  // -------- Public API on window.FeedbackWidget --------
+  // Lets the host app scope comments to sub-contexts that don't have their
+  // own URL (modals, drawers, slide-overs, tabs, accordion sections).
+  // Usage:
+  //   window.FeedbackWidget.setContext('modal:trial-456');  // on open
+  //   window.FeedbackWidget.clearContext();                  // on close
+  // Pins dropped while a context is set are stored under
+  // pathname + '|' + label and only show when that same context is active.
+  window.FeedbackWidget = window.FeedbackWidget || {};
+  window.FeedbackWidget.setContext = function (label) {
+    if (label == null || label === '') {
+      window.FeedbackWidget.clearContext();
+      return;
+    }
+    label = String(label);
+    if (label.indexOf(CONTEXT_SEP) !== -1) {
+      console.warn('[feedback-widget] context label cannot contain "' + CONTEXT_SEP + '"');
+      label = label.split(CONTEXT_SEP).join('-');
+    }
+    if (STATE.context === label) return;
+    STATE.context = label;
+    load();
+  };
+  window.FeedbackWidget.clearContext = function () {
+    if (STATE.context === null) return;
+    STATE.context = null;
+    load();
+  };
+  window.FeedbackWidget.getContext = function () {
+    return STATE.context;
+  };
 
   // Two layers:
   //   #__fw_root  — position: fixed, holds the toggle button (and any
@@ -291,7 +334,7 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           project_id: projectId,
-          pathname: location.pathname,
+          pathname: currentPath(),
           x_pct: xPct,
           y_pct: yPct,
           text: text,
@@ -322,7 +365,7 @@
       STATE.pending = null;
     }
     var u = apiBase + '/api/comments?project_id=' + encodeURIComponent(projectId) +
-            '&path=' + encodeURIComponent(location.pathname);
+            '&path=' + encodeURIComponent(currentPath());
     fetch(u)
       .then(function (r) { return r.json(); })
       .then(function (rows) {
@@ -676,12 +719,12 @@
       groups[key].push(c);
     });
     var paths = Object.keys(groups).sort(function (a, b) {
-      if (a === location.pathname) return -1;
-      if (b === location.pathname) return 1;
+      if (a === currentPath()) return -1;
+      if (b === currentPath()) return 1;
       return a.localeCompare(b);
     });
     paths.forEach(function (p) {
-      var isHere = (p === location.pathname);
+      var isHere = (p === currentPath());
       var group = document.createElement('section');
       group.className = '__fw_panel_group' + (isHere ? ' __fw_panel_group_here' : '');
 
@@ -696,9 +739,15 @@
       if (isHere) {
         inner += '<div class="__fw_panel_path_eyebrow">This page</div>';
       }
+      // Split the stored pathname into (real route, context label) so we can
+      // display them separately — pathname plain, context as a chip.
+      var sepIx = p.indexOf(CONTEXT_SEP);
+      var pathPart = sepIx === -1 ? p : p.slice(0, sepIx);
+      var ctxPart  = sepIx === -1 ? ''  : p.slice(sepIx + 1);
       inner +=
         '<div class="__fw_panel_path_row">' +
-          '<span class="__fw_panel_path_text" title="' + escapeHtml(p) + '">' + escapeHtml(p) + '</span>' +
+          '<span class="__fw_panel_path_text" title="' + escapeHtml(p) + '">' + escapeHtml(pathPart) + '</span>' +
+          (ctxPart ? '<span class="__fw_panel_path_ctx" title="' + escapeHtml(ctxPart) + '">' + escapeHtml(ctxPart) + '</span>' : '') +
           '<span class="__fw_panel_path_count" title="' + roots.length + ' thread' + (roots.length === 1 ? '' : 's') + '">' +
             roots.length +
           '</span>' +
@@ -771,11 +820,17 @@
   // there with a #fw=<id> hash, which the widget picks up after the page
   // loads (see focusPinFromHash).
   function jumpToComment(c) {
-    if ((c.pathname || '/') === location.pathname) {
+    if ((c.pathname || '/') === currentPath()) {
       closePanel();
       setTimeout(function () { focusPin(c.id); }, 220);
     } else {
-      location.href = (c.pathname || '/') + '#fw=' + encodeURIComponent(c.id);
+      // Strip any context suffix from the stored pathname before navigating —
+      // we can only travel to a real URL. Re-entering the modal/sub-context
+      // is the host's job; pin focus will pick up via the hash on arrival.
+      var raw = c.pathname || '/';
+      var sep = raw.indexOf(CONTEXT_SEP);
+      var realPath = sep === -1 ? raw : raw.slice(0, sep);
+      location.href = realPath + '#fw=' + encodeURIComponent(c.id);
     }
   }
 
@@ -1161,6 +1216,14 @@
       '  font-size: 12px !important; font-weight: 600 !important; color: #334155 !important;',
       '  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }',
       '.__fw_panel_group_here .__fw_panel_path_text { color: #1e3a8a !important; }',
+      // Context chip — shown when a comment was made inside a sub-context
+      // (modal, drawer, tab) registered via window.FeedbackWidget.setContext.
+      '.__fw_panel_path_ctx { flex-shrink: 0; display: inline-flex; align-items: center;',
+      '  padding: 2px 8px !important; border-radius: 6px !important;',
+      '  background: rgba(99, 102, 241, 0.12) !important; color: #4338ca !important;',
+      '  font-size: 11px !important; font-weight: 600 !important;',
+      '  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;',
+      '  max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
       '.__fw_panel_path_count { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;',
       '  min-width: 22px; height: 22px; padding: 0 8px;',
       '  background: rgba(15, 23, 42, 0.06) !important; color: #475569 !important;',

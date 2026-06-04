@@ -41,16 +41,18 @@ module.exports = async function handler(req, res) {
     if (req.method === 'GET') {
       const project_id = req.query.project_id;
       const path = req.query.path;
-      if (!project_id || !path) {
-        res.status(400).json({ error: 'project_id and path are required' });
+      if (!project_id) {
+        res.status(400).json({ error: 'project_id is required' });
         return;
       }
       const params = new URLSearchParams({
         select: '*',
         project_id: `eq.${project_id}`,
-        pathname: `eq.${path}`,
         order: 'created_at.asc',
       });
+      // path is optional — omit to fetch every comment across the project
+      // (used by the widget's "All comments" panel).
+      if (path) params.set('pathname', `eq.${path}`);
       const { status, body } = await sb(`comments?${params}`);
       res.status(status).json(body);
       return;

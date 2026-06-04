@@ -23,9 +23,11 @@
 
   var STATE = {
     active: false,
-    pins: [],
+    pins: [],            // pins on the current pathname
     pending: null,
     openBubble: null,
+    panelOpen: false,
+    allPins: [],         // every pin across the project (for the All-comments panel)
   };
 
   injectStyles();
@@ -62,6 +64,34 @@
     '<span class="__fw_mode_hint">Esc to exit</span>';
   root.appendChild(modeBadge);
 
+  // Bottom-right dock: a List button (opens the All-comments panel) + the
+  // primary Comment toggle. Wrapping them in a dock lets us position the
+  // cluster as a single unit while keeping each button individually focusable.
+  var dock = document.createElement('div');
+  dock.className = '__fw_dock';
+
+  var listBtn = document.createElement('button');
+  listBtn.type = 'button';
+  listBtn.className = '__fw_list_btn';
+  listBtn.title = 'All comments';
+  listBtn.setAttribute('aria-label', 'All comments');
+  listBtn.innerHTML =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<line x1="8" y1="6" x2="21" y2="6"></line>' +
+    '<line x1="8" y1="12" x2="21" y2="12"></line>' +
+    '<line x1="8" y1="18" x2="21" y2="18"></line>' +
+    '<line x1="3" y1="6" x2="3.01" y2="6"></line>' +
+    '<line x1="3" y1="12" x2="3.01" y2="12"></line>' +
+    '<line x1="3" y1="18" x2="3.01" y2="18"></line>' +
+    '</svg>' +
+    '<span class="__fw_list_count" hidden>0</span>';
+  listBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (STATE.panelOpen) closePanel(); else openPanel();
+  });
+  dock.appendChild(listBtn);
+
   var toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = '__fw_toggle';
@@ -70,7 +100,34 @@
     e.stopPropagation();
     setActive(!STATE.active);
   });
-  root.appendChild(toggle);
+  dock.appendChild(toggle);
+  root.appendChild(dock);
+
+  // All-comments panel — slides in from the right. Lives on the root layer so
+  // pointer-events stay opt-in for descendants.
+  var panel = document.createElement('aside');
+  panel.className = '__fw_panel';
+  panel.setAttribute('aria-hidden', 'true');
+  panel.innerHTML =
+    '<div class="__fw_panel_head">' +
+      '<div class="__fw_panel_title">' +
+        '<span>All comments</span>' +
+        '<span class="__fw_panel_count">0</span>' +
+      '</div>' +
+      '<button type="button" class="__fw_panel_close" title="Close (Esc)" aria-label="Close panel">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<line x1="18" y1="6" x2="6" y2="18"></line>' +
+        '<line x1="6" y1="6" x2="18" y2="18"></line>' +
+        '</svg>' +
+      '</button>' +
+    '</div>' +
+    '<div class="__fw_panel_body"></div>';
+  root.appendChild(panel);
+  var panelBody = panel.querySelector('.__fw_panel_body');
+  var panelCount = panel.querySelector('.__fw_panel_count');
+  var listCount = listBtn.querySelector('.__fw_list_count');
+  panel.querySelector('.__fw_panel_close').addEventListener('click', closePanel);
 
   // Capture-phase click handler so we get the click before page handlers,
   // but only when comment mode is on and the click isn't on widget UI.
@@ -118,6 +175,12 @@
     }
     if (STATE.openBubble) {
       closeOpenBubble();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (STATE.panelOpen) {
+      closePanel();
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -252,10 +315,16 @@
       .then(function (rows) {
         STATE.pins = Array.isArray(rows) ? rows : [];
         renderPins();
+        // If we arrived via a panel jump from another page, the URL has a
+        // #fw=<id> hash — scroll that pin into view and open its bubble.
+        focusPinFromHash();
       })
       .catch(function (err) {
         console.error('[feedback-widget]', err);
       });
+    // Also refresh the project-wide count in the background, so the dock
+    // badge stays accurate without forcing the panel open.
+    fetchAllPins().catch(function () { /* swallow — count just stays stale */ });
   }
 
   function positionWrap(wrap, xPct, yPct) {
@@ -360,6 +429,164 @@
     STATE.openBubble = null;
   }
 
+  // -------- All-comments panel --------
+
+  function fetchAllPins() {
+    return fetch(apiBase + '/api/comments?project_id=' + encodeURIComponent(projectId))
+      .then(function (r) { return r.json(); })
+      .then(function (rows) {
+        STATE.allPins = Array.isArray(rows) ? rows : [];
+        updateDockCount();
+        if (STATE.panelOpen) renderPanel();
+        return STATE.allPins;
+      });
+  }
+
+  function updateDockCount() {
+    var n = STATE.allPins.length;
+    if (n > 0) {
+      listCount.hidden = false;
+      listCount.textContent = n > 99 ? '99+' : String(n);
+    } else {
+      listCount.hidden = true;
+    }
+    panelCount.textContent = String(n);
+  }
+
+  function openPanel() {
+    STATE.panelOpen = true;
+    panel.classList.add('__fw_panel_open');
+    panel.setAttribute('aria-hidden', 'false');
+    listBtn.classList.add('__fw_list_btn_on');
+    // Render whatever we have, then refresh from the server.
+    renderPanel();
+    fetchAllPins().catch(function (err) {
+      console.error('[feedback-widget]', err);
+    });
+  }
+
+  function closePanel() {
+    STATE.panelOpen = false;
+    panel.classList.remove('__fw_panel_open');
+    panel.setAttribute('aria-hidden', 'true');
+    listBtn.classList.remove('__fw_list_btn_on');
+  }
+
+  function renderPanel() {
+    panelBody.innerHTML = '';
+    updateDockCount();
+    if (!STATE.allPins.length) {
+      var empty = document.createElement('div');
+      empty.className = '__fw_panel_empty';
+      empty.innerHTML =
+        '<div class="__fw_panel_empty_title">No comments yet</div>' +
+        '<div class="__fw_panel_empty_sub">Click <strong>Comment</strong> below, then click anywhere on the page to drop a pin.</div>';
+      panelBody.appendChild(empty);
+      return;
+    }
+    // Group by pathname; current path bubbles to the top.
+    var groups = {};
+    STATE.allPins.forEach(function (c) {
+      var key = c.pathname || '/';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(c);
+    });
+    var paths = Object.keys(groups).sort(function (a, b) {
+      if (a === location.pathname) return -1;
+      if (b === location.pathname) return 1;
+      return a.localeCompare(b);
+    });
+    paths.forEach(function (p) {
+      var group = document.createElement('div');
+      group.className = '__fw_panel_group';
+      var label = document.createElement('div');
+      label.className = '__fw_panel_path';
+      var pathSpan = document.createElement('span');
+      pathSpan.className = '__fw_panel_path_text';
+      pathSpan.textContent = p;
+      label.appendChild(pathSpan);
+      if (p === location.pathname) {
+        var hereTag = document.createElement('span');
+        hereTag.className = '__fw_panel_path_here';
+        hereTag.textContent = 'this page';
+        label.appendChild(hereTag);
+      }
+      var countTag = document.createElement('span');
+      countTag.className = '__fw_panel_path_count';
+      countTag.textContent = String(groups[p].length);
+      label.appendChild(countTag);
+      group.appendChild(label);
+      groups[p].forEach(function (c) {
+        group.appendChild(makePanelItem(c));
+      });
+      panelBody.appendChild(group);
+    });
+  }
+
+  function makePanelItem(c) {
+    var item = document.createElement('button');
+    item.type = 'button';
+    item.className = '__fw_panel_item';
+    item.title = 'Jump to this comment';
+    var authorName = c.author || 'Anonymous';
+    var avatarColor = colorFromString(authorName);
+    var avatarChar = initial(authorName);
+    var relWhen = formatRelTime(c.created_at);
+    var absWhen = '';
+    try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
+    item.innerHTML =
+      '<div class="__fw_panel_item_head">' +
+        '<span class="__fw_avatar" style="background:' + avatarColor + '" aria-hidden="true">' +
+          escapeHtml(avatarChar) +
+        '</span>' +
+        '<span class="__fw_author">' + escapeHtml(authorName) + '</span>' +
+        '<span class="__fw_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
+      '</div>' +
+      '<div class="__fw_panel_item_text">' + escapeHtml(c.text) + '</div>';
+    item.addEventListener('click', function () { jumpToComment(c); });
+    return item;
+  }
+
+  // Same path → close panel and focus the pin. Different path → navigate
+  // there with a #fw=<id> hash, which the widget picks up after the page
+  // loads (see focusPinFromHash).
+  function jumpToComment(c) {
+    if ((c.pathname || '/') === location.pathname) {
+      closePanel();
+      setTimeout(function () { focusPin(c.id); }, 220);
+    } else {
+      location.href = (c.pathname || '/') + '#fw=' + encodeURIComponent(c.id);
+    }
+  }
+
+  function focusPin(id) {
+    var wrap = pinLayer.querySelector('.__fw_placed[data-id="' + id.replace(/"/g, '\\"') + '"]');
+    if (!wrap) return;
+    var pin = wrap.querySelector('.__fw_pin');
+    if (!pin) return;
+    try {
+      pin.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (_) {
+      pin.scrollIntoView();
+    }
+    pin.classList.add('__fw_pin_focus');
+    setTimeout(function () { pin.classList.remove('__fw_pin_focus'); }, 1400);
+    // Auto-open the bubble after the scroll settles.
+    setTimeout(function () { pin.click(); }, 380);
+  }
+
+  function focusPinFromHash() {
+    var m = /^#fw=(.+)$/.exec(location.hash || '');
+    if (!m) return;
+    var id = decodeURIComponent(m[1]);
+    // Wait a tick — pins were just rendered, but layout may still be settling.
+    setTimeout(function () { focusPin(id); }, 80);
+    // Strip the hash so reloads / share-back don't re-trigger the jump.
+    try {
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch (_) {}
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (ch) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
@@ -413,8 +640,33 @@
       '#__fw_root *, #__fw_pins * { box-sizing: border-box; font-family: ' + FONT + '; }',
       '#__fw_pins { position: absolute; top: 0; left: 0; width: 0; height: 0; pointer-events: none; z-index: 2147483599; }',
 
-      // --- Toggle button ---
-      '.__fw_toggle { position: fixed; right: 16px; bottom: 16px; pointer-events: auto;',
+      // --- Bottom-right dock (list button + comment toggle) ---
+      '.__fw_dock { position: fixed; right: 16px; bottom: 16px; pointer-events: none;',
+      '  display: flex; align-items: center; gap: 8px; z-index: 2147483600; }',
+      '.__fw_list_btn { pointer-events: auto;',
+      '  width: 40px !important; height: 40px !important; position: relative;',
+      '  background: #ffffff !important; color: #475569 !important;',
+      '  border: 1px solid rgba(15, 23, 42, 0.08) !important; border-radius: 50% !important;',
+      '  padding: 0 !important; display: inline-flex !important;',
+      '  align-items: center !important; justify-content: center !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18) !important;',
+      '  transition: background 0.15s, color 0.15s, transform 0.15s; }',
+      '.__fw_list_btn:hover { background: #f8fafc !important; color: #0f172a !important; transform: translateY(-1px); }',
+      '.__fw_list_btn_on { background: #0f172a !important; color: #ffffff !important;',
+      '  border-color: #0f172a !important; }',
+      '.__fw_list_btn_on:hover { background: #1e293b !important; color: #ffffff !important; }',
+      '.__fw_list_count { position: absolute; top: -4px; right: -4px;',
+      '  min-width: 18px; height: 18px; padding: 0 5px;',
+      '  background: #2563eb !important; color: #ffffff !important;',
+      '  border: 2px solid #ffffff !important; border-radius: 999px !important;',
+      '  font-size: 10px !important; font-weight: 700 !important;',
+      '  font-family: ' + FONT + ' !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  line-height: 1 !important; box-sizing: border-box !important; }',
+
+      // --- Toggle button (now a child of .__fw_dock; no fixed positioning) ---
+      '.__fw_toggle { pointer-events: auto; position: static !important;',
       '  background: #0f172a !important; color: #ffffff !important;',
       '  border: 0 !important; border-radius: 999px !important;',
       '  padding: 10px 18px !important; font-size: 13px !important; font-weight: 600 !important;',
@@ -446,7 +698,9 @@
       'html.__fw_commenting, html.__fw_commenting * { cursor: crosshair !important; }',
       'html.__fw_commenting #__fw_root, html.__fw_commenting #__fw_root *,',
       'html.__fw_commenting #__fw_pins, html.__fw_commenting #__fw_pins * { cursor: auto !important; }',
-      'html.__fw_commenting .__fw_toggle, html.__fw_commenting .__fw_pin,',
+      'html.__fw_commenting .__fw_toggle, html.__fw_commenting .__fw_list_btn,',
+      'html.__fw_commenting .__fw_panel_close, html.__fw_commenting .__fw_panel_item,',
+      'html.__fw_commenting .__fw_pin,',
       'html.__fw_commenting .__fw_cancel, html.__fw_commenting .__fw_submit,',
       'html.__fw_commenting .__fw_delete { cursor: pointer !important; }',
       'html.__fw_commenting .__fw_name, html.__fw_commenting .__fw_text { cursor: text !important; }',
@@ -557,6 +811,84 @@
       '.__fw_delete[disabled] { opacity: 0.5 !important; cursor: default !important;',
       '  background: transparent !important; color: #94a3b8 !important; }',
       '.__fw_delete_icon { flex-shrink: 0 !important; }',
+
+      // --- Pin "focus" pulse (used when jumping to a pin from the panel) ---
+      '@keyframes __fw_pin_pulse {',
+      '  0%   { transform: scale(1);   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4), 0 0 0 0   rgba(37, 99, 235, 0.55); }',
+      '  60%  { transform: scale(1.35); box-shadow: 0 4px 16px rgba(37, 99, 235, 0.5), 0 0 0 18px rgba(37, 99, 235, 0);    }',
+      '  100% { transform: scale(1);   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4), 0 0 0 0   rgba(37, 99, 235, 0);    }',
+      '}',
+      '.__fw_pin_focus { animation: __fw_pin_pulse 1.2s ease-out !important; }',
+
+      // --- All-comments side panel ---
+      '.__fw_panel { position: fixed; top: 0; right: 0; bottom: 0;',
+      '  width: 380px; max-width: 92vw;',
+      '  background: #ffffff !important; color: #0f172a !important;',
+      '  border-left: 1px solid rgba(15, 23, 42, 0.08) !important;',
+      '  box-shadow: -16px 0 40px rgba(15, 23, 42, 0.14) !important;',
+      '  z-index: 2147483603; pointer-events: auto;',
+      '  transform: translateX(100%); transition: transform 0.25s ease;',
+      '  display: flex; flex-direction: column;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_panel_open { transform: translateX(0); }',
+
+      '.__fw_panel_head { display: flex; align-items: center; justify-content: space-between;',
+      '  padding: 16px 16px 14px 18px;',
+      '  border-bottom: 1px solid rgba(15, 23, 42, 0.06); }',
+      '.__fw_panel_title { display: flex; align-items: center; gap: 8px;',
+      '  font-size: 15px !important; font-weight: 600 !important; color: #0f172a !important; }',
+      '.__fw_panel_count { display: inline-flex; align-items: center; justify-content: center;',
+      '  min-width: 22px; height: 22px; padding: 0 7px;',
+      '  background: #f1f5f9 !important; color: #475569 !important;',
+      '  border-radius: 999px !important;',
+      '  font-size: 11px !important; font-weight: 600 !important; line-height: 1 !important; }',
+      '.__fw_panel_close { width: 32px !important; height: 32px !important;',
+      '  background: transparent !important; color: #64748b !important;',
+      '  border: 0 !important; border-radius: 8px !important; padding: 0 !important;',
+      '  display: inline-flex; align-items: center; justify-content: center;',
+      '  cursor: pointer !important; transition: background 0.15s, color 0.15s; }',
+      '.__fw_panel_close:hover { background: #f1f5f9 !important; color: #0f172a !important; }',
+
+      '.__fw_panel_body { flex: 1; overflow-y: auto; padding: 12px 12px 16px; }',
+      '.__fw_panel_empty { padding: 32px 16px; text-align: center; color: #64748b; }',
+      '.__fw_panel_empty_title { font-size: 14px !important; font-weight: 600 !important;',
+      '  color: #0f172a !important; margin-bottom: 6px; }',
+      '.__fw_panel_empty_sub { font-size: 13px !important; line-height: 1.5; }',
+
+      '.__fw_panel_group { margin-bottom: 18px; }',
+      '.__fw_panel_path { display: flex; align-items: center; gap: 6px;',
+      '  padding: 8px 6px; margin-bottom: 2px;',
+      '  font-size: 11px !important; font-weight: 600 !important;',
+      '  color: #64748b !important; text-transform: uppercase; letter-spacing: 0.04em; }',
+      '.__fw_panel_path_text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;',
+      '  text-transform: none; letter-spacing: 0; color: #334155 !important;',
+      '  font-size: 12px !important; font-weight: 600 !important;',
+      '  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }',
+      '.__fw_panel_path_here { background: #dbeafe !important; color: #1d4ed8 !important;',
+      '  padding: 2px 8px !important; border-radius: 999px !important;',
+      '  font-size: 10px !important; font-weight: 600 !important;',
+      '  letter-spacing: 0.04em !important; text-transform: uppercase !important; }',
+      '.__fw_panel_path_count { background: #f1f5f9 !important; color: #475569 !important;',
+      '  padding: 2px 8px !important; border-radius: 999px !important;',
+      '  font-size: 11px !important; font-weight: 600 !important;',
+      '  text-transform: none; letter-spacing: 0; }',
+
+      '.__fw_panel_item { display: block !important; width: 100% !important;',
+      '  text-align: left !important; background: transparent !important;',
+      '  border: 1px solid transparent !important; border-radius: 10px !important;',
+      '  padding: 10px 12px !important; margin-bottom: 4px !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: none !important;',
+      '  transition: background 0.12s, border-color 0.12s, transform 0.12s; }',
+      '.__fw_panel_item:hover { background: #f8fafc !important; border-color: rgba(15, 23, 42, 0.06) !important; }',
+      '.__fw_panel_item:active { transform: scale(0.99); }',
+      '.__fw_panel_item_head { display: flex !important; align-items: center !important;',
+      '  gap: 8px !important; margin-bottom: 6px !important; }',
+      '.__fw_panel_item_text { font-size: 13px !important; color: #334155 !important;',
+      '  line-height: 1.5 !important; margin: 0 !important;',
+      '  display: -webkit-box !important; -webkit-line-clamp: 2 !important;',
+      '  -webkit-box-orient: vertical !important; overflow: hidden !important;',
+      '  word-wrap: break-word !important; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

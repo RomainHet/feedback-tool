@@ -300,7 +300,7 @@
       })
         .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
         .then(function (res) {
-          if (!res.ok) throw new Error(res.j && res.j.error || 'request failed');
+          if (!res.ok) throw new Error(errorMessage(res) || 'Couldn\'t save comment.');
           STATE.pins.push(res.j);
           wrap.remove();
           STATE.pending = null;
@@ -490,7 +490,7 @@
       fetch(apiBase + '/api/comments?id=' + encodeURIComponent(c.id), { method: 'DELETE' })
         .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
         .then(function (res) {
-          if (!res.ok) throw new Error(res.j && res.j.error || 'delete failed');
+          if (!res.ok) throw new Error(errorMessage(res) || 'Couldn\'t delete comment.');
           // Drop the deleted row and (cascade) any replies under it.
           STATE.pins = STATE.pins.filter(function (p) {
             return p.id !== c.id && p.parent_id !== c.id;
@@ -583,7 +583,7 @@
       })
         .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
         .then(function (res) {
-          if (!res.ok) throw new Error(res.j && res.j.error || 'reply failed');
+          if (!res.ok) throw new Error(errorMessage(res) || 'Couldn\'t post reply.');
           STATE.pins.push(res.j);
           STATE.allPins.push(res.j);
           STATE.replyingTo = null;
@@ -801,6 +801,17 @@
     try {
       history.replaceState(null, '', location.pathname + location.search);
     } catch (_) {}
+  }
+
+  // Extract the most useful error string from whatever shape the server sent.
+  // Our /api/comments normalizes to {error}, but if anything in the chain
+  // leaks the raw Supabase shape ({code, message, hint}) we still want to
+  // surface a readable message rather than fall through to a generic string.
+  function errorMessage(res) {
+    if (!res) return '';
+    var j = res.j || res;
+    if (!j || typeof j !== 'object') return '';
+    return j.error || j.message || j.hint || (j.code ? ('error ' + j.code) : '');
   }
 
   function showFormError(el, err) {

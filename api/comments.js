@@ -60,7 +60,7 @@ module.exports = async function handler(req, res) {
 
     if (req.method === 'POST') {
       const b = req.body || {};
-      const { project_id, pathname, x_pct, y_pct, text, author } = b;
+      const { project_id, pathname, x_pct, y_pct, text, author, parent_id } = b;
       if (
         !project_id ||
         !pathname ||
@@ -80,6 +80,14 @@ module.exports = async function handler(req, res) {
         text: text.slice(0, 4000),
         author: author ? String(author).slice(0, 120) : null,
       };
+      // parent_id is optional — set it to thread the new comment as a reply.
+      if (parent_id != null) {
+        if (typeof parent_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(parent_id)) {
+          res.status(400).json({ error: 'parent_id must be a UUID' });
+          return;
+        }
+        row.parent_id = parent_id;
+      }
       const { status, body } = await sb('comments', {
         method: 'POST',
         headers: { Prefer: 'return=representation' },

@@ -23,11 +23,13 @@
 
   var STATE = {
     active: false,
-    pins: [],            // pins on the current pathname
+    pins: [],            // every comment on the current pathname (roots + replies)
     pending: null,
-    openBubble: null,
+    openBubble: null,    // pin wrapper element whose bubble is currently open
+    openBubbleRoot: null,// the root comment that bubble represents
+    replyingTo: null,    // id of the root currently being replied to (or null)
     panelOpen: false,
-    allPins: [],         // every pin across the project (for the All-comments panel)
+    allPins: [],         // every comment across the project (for the All-comments panel)
   };
 
   injectStyles();
@@ -169,6 +171,15 @@
     if (STATE.pending) {
       STATE.pending.el.remove();
       STATE.pending = null;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (STATE.replyingTo && STATE.openBubble) {
+      // Collapse the reply composer back to the Reply button without closing
+      // the whole thread bubble.
+      STATE.replyingTo = null;
+      refreshOpenBubble();
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -333,17 +344,30 @@
     wrap.style.top = p.y + 'px';
   }
 
+  // Pins on the page are only the ROOTS of each thread. Replies live at the
+  // same coordinates as their root and are shown inside the bubble, not as
+  // separate pins.
+  function rootsOf(pins) {
+    return pins.filter(function (p) { return !p.parent_id; });
+  }
+
+  function repliesOf(pins, parentId) {
+    return pins
+      .filter(function (p) { return p.parent_id === parentId; })
+      .sort(function (a, b) { return new Date(a.created_at) - new Date(b.created_at); });
+  }
+
   function renderPins() {
     if (!pinLayer.parentNode) attachPinLayer();
     // Remove existing rendered pin wrappers (but not the pending composer).
     Array.prototype.slice.call(pinLayer.querySelectorAll('.__fw_placed:not(.__fw_pending)'))
       .forEach(function (n) { n.remove(); });
 
-    STATE.pins.forEach(function (c, i) {
+    rootsOf(STATE.pins).forEach(function (root, i) {
       var wrap = document.createElement('div');
       wrap.className = '__fw_placed';
-      positionWrap(wrap, c.x_pct, c.y_pct);
-      wrap.dataset.id = c.id;
+      positionWrap(wrap, root.x_pct, root.y_pct);
+      wrap.dataset.id = root.id;
 
       var pin = document.createElement('button');
       pin.type = 'button';
@@ -355,78 +379,230 @@
           closeOpenBubble();
           return;
         }
-        closeOpenBubble();
-        var bubble = document.createElement('div');
-        bubble.className = '__fw_bubble';
-        var authorName = c.author || 'Anonymous';
-        var absWhen = '';
-        try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
-        var relWhen = formatRelTime(c.created_at);
-        var avatarColor = colorFromString(authorName);
-        var avatarChar = initial(authorName);
-        // Trash icon (Feather Icons "trash-2", MIT) — strokes inherit currentColor
-        // from .__fw_delete, so hover state tints the icon too.
-        var trashSvg =
-          '<svg class="__fw_delete_icon" width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
-          'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-          '<polyline points="3 6 5 6 21 6"></polyline>' +
-          '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>' +
-          '<path d="M10 11v6"></path><path d="M14 11v6"></path>' +
-          '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>' +
-          '</svg>';
-        bubble.innerHTML =
-          '<div class="__fw_bubble_head">' +
-            '<span class="__fw_avatar" style="background:' + avatarColor + '" aria-hidden="true">' +
-              escapeHtml(avatarChar) +
-            '</span>' +
-            '<span class="__fw_author">' + escapeHtml(authorName) + '</span>' +
-            '<span class="__fw_dot" aria-hidden="true">·</span>' +
-            '<span class="__fw_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
-          '</div>' +
-          '<div class="__fw_text_view">' + escapeHtml(c.text) + '</div>' +
-          '<div class="__fw_bubble_foot">' +
-            '<button type="button" class="__fw_delete" title="Delete comment">' +
-              trashSvg +
-              '<span class="__fw_delete_label">Delete</span>' +
-            '</button>' +
-          '</div>';
-        wrap.appendChild(bubble);
-        STATE.openBubble = wrap;
-
-        var delBtn = bubble.querySelector('.__fw_delete');
-        var delLabel = delBtn.querySelector('.__fw_delete_label');
-        delBtn.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          if (!window.confirm('Delete this comment?')) return;
-          delBtn.disabled = true;
-          delLabel.textContent = 'Deleting…';
-          fetch(apiBase + '/api/comments?id=' + encodeURIComponent(c.id), {
-            method: 'DELETE',
-          })
-            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-            .then(function (res) {
-              if (!res.ok) throw new Error(res.j && res.j.error || 'delete failed');
-              STATE.pins = STATE.pins.filter(function (p) { return p.id !== c.id; });
-              closeOpenBubble();
-              renderPins();
-            })
-            .catch(function (err) {
-              console.error('[feedback-widget]', err);
-              delBtn.disabled = false;
-              delLabel.textContent = 'Delete';
-            });
-        });
+        openBubbleFor(root, wrap);
       });
       wrap.appendChild(pin);
       pinLayer.appendChild(wrap);
     });
   }
 
+  // -------- Bubble (thread view) --------
+
+  // Feather Icons (MIT). currentColor lets the host button tint them on hover.
+  var SVG_TRASH =
+    '<svg class="__fw_icon" width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="3 6 5 6 21 6"></polyline>' +
+    '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>' +
+    '<path d="M10 11v6"></path><path d="M14 11v6"></path>' +
+    '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>' +
+    '</svg>';
+  var SVG_REPLY =
+    '<svg class="__fw_icon" width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="9 17 4 12 9 7"></polyline>' +
+    '<path d="M20 18v-2a4 4 0 0 0-4-4H4"></path>' +
+    '</svg>';
+
+  function openBubbleFor(root, wrap) {
+    closeOpenBubble();
+    var bubble = buildBubble(root);
+    wrap.appendChild(bubble);
+    STATE.openBubble = wrap;
+    STATE.openBubbleRoot = root;
+  }
+
+  function refreshOpenBubble() {
+    if (!STATE.openBubble || !STATE.openBubbleRoot) return;
+    var wrap = STATE.openBubble;
+    var root = STATE.openBubbleRoot;
+    // Pull the freshest root from state in case it was updated.
+    var freshRoot = STATE.pins.find(function (p) { return p.id === root.id; }) || root;
+    var old = wrap.querySelector('.__fw_bubble');
+    var next = buildBubble(freshRoot);
+    if (old) old.replaceWith(next); else wrap.appendChild(next);
+  }
+
+  function buildBubble(root) {
+    var bubble = document.createElement('div');
+    bubble.className = '__fw_bubble';
+
+    var thread = document.createElement('div');
+    thread.className = '__fw_thread';
+    thread.appendChild(buildThreadRow(root, true));
+
+    var replies = repliesOf(STATE.pins, root.id);
+    if (replies.length) {
+      var replyList = document.createElement('div');
+      replyList.className = '__fw_thread_replies';
+      replies.forEach(function (r) {
+        replyList.appendChild(buildThreadRow(r, false));
+      });
+      thread.appendChild(replyList);
+    }
+    bubble.appendChild(thread);
+
+    // Reply area — collapsed button, or expanded composer if user is replying
+    // to this thread.
+    var area = document.createElement('div');
+    area.className = '__fw_reply_area';
+    bubble.appendChild(area);
+    if (STATE.replyingTo === root.id) {
+      renderReplyForm(area, root);
+    } else {
+      renderReplyButton(area, root);
+    }
+
+    return bubble;
+  }
+
+  function buildThreadRow(c, isRoot) {
+    var row = document.createElement('div');
+    row.className = '__fw_thread_row' + (isRoot ? ' __fw_thread_root' : ' __fw_thread_reply_row');
+    row.dataset.id = c.id;
+    var authorName = c.author || 'Anonymous';
+    var absWhen = '';
+    try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
+    var relWhen = formatRelTime(c.created_at);
+    var avatarColor = colorFromString(authorName);
+    var avatarChar = initial(authorName);
+    row.innerHTML =
+      '<div class="__fw_thread_head">' +
+        '<span class="__fw_avatar' + (isRoot ? '' : ' __fw_avatar_sm') +
+          '" style="background:' + avatarColor + '" aria-hidden="true">' +
+          escapeHtml(avatarChar) +
+        '</span>' +
+        '<span class="__fw_author">' + escapeHtml(authorName) + '</span>' +
+        '<span class="__fw_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
+        '<button type="button" class="__fw_row_delete" title="Delete">' + SVG_TRASH + '</button>' +
+      '</div>' +
+      '<div class="__fw_thread_text">' + escapeHtml(c.text) + '</div>';
+
+    var delBtn = row.querySelector('.__fw_row_delete');
+    delBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (!window.confirm(isRoot && repliesOf(STATE.pins, c.id).length
+        ? 'Delete this comment and all its replies?'
+        : 'Delete this comment?')) return;
+      delBtn.disabled = true;
+      fetch(apiBase + '/api/comments?id=' + encodeURIComponent(c.id), { method: 'DELETE' })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.j && res.j.error || 'delete failed');
+          // Drop the deleted row and (cascade) any replies under it.
+          STATE.pins = STATE.pins.filter(function (p) {
+            return p.id !== c.id && p.parent_id !== c.id;
+          });
+          STATE.allPins = STATE.allPins.filter(function (p) {
+            return p.id !== c.id && p.parent_id !== c.id;
+          });
+          if (isRoot) {
+            closeOpenBubble();
+            renderPins();
+          } else {
+            refreshOpenBubble();
+          }
+          if (STATE.panelOpen) renderPanel();
+          updateDockCount();
+        })
+        .catch(function (err) {
+          console.error('[feedback-widget]', err);
+          delBtn.disabled = false;
+        });
+    });
+
+    return row;
+  }
+
+  function renderReplyButton(area, root) {
+    area.innerHTML = '';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = '__fw_reply_open';
+    btn.innerHTML = SVG_REPLY + '<span>Reply</span>';
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      STATE.replyingTo = root.id;
+      renderReplyForm(area, root);
+    });
+    area.appendChild(btn);
+  }
+
+  function renderReplyForm(area, root) {
+    area.innerHTML = '';
+    var form = document.createElement('form');
+    form.className = '__fw_reply_form';
+    form.innerHTML =
+      '<input class="__fw_name __fw_reply_name" placeholder="Your name" maxlength="120" />' +
+      '<textarea class="__fw_text __fw_reply_text" placeholder="Write a reply…" rows="2" maxlength="4000"></textarea>' +
+      '<div class="__fw_actions">' +
+      '<button type="button" class="__fw_cancel">Cancel</button>' +
+      '<button type="submit" class="__fw_submit">Reply</button>' +
+      '</div>';
+    area.appendChild(form);
+    var nameInput = form.querySelector('.__fw_name');
+    var textInput = form.querySelector('.__fw_text');
+    try {
+      var savedName = window.localStorage && localStorage.getItem('__fw_author');
+      if (savedName) nameInput.value = savedName;
+    } catch (_) {}
+    setTimeout(function () {
+      (nameInput.value ? textInput : nameInput).focus();
+    }, 0);
+
+    form.querySelector('.__fw_cancel').addEventListener('click', function (e) {
+      e.stopPropagation();
+      STATE.replyingTo = null;
+      renderReplyButton(area, root);
+    });
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var author = nameInput.value.trim();
+      var text = textInput.value.trim();
+      if (!text) { textInput.focus(); return; }
+      try { if (author) localStorage.setItem('__fw_author', author); } catch (_) {}
+      var submitBtn = form.querySelector('.__fw_submit');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Sending…';
+      fetch(apiBase + '/api/comments', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          pathname: root.pathname,
+          x_pct: root.x_pct,
+          y_pct: root.y_pct,
+          text: text,
+          author: author || null,
+          parent_id: root.id,
+        }),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.j && res.j.error || 'reply failed');
+          STATE.pins.push(res.j);
+          STATE.allPins.push(res.j);
+          STATE.replyingTo = null;
+          refreshOpenBubble();
+          if (STATE.panelOpen) renderPanel();
+          updateDockCount();
+        })
+        .catch(function (err) {
+          console.error('[feedback-widget]', err);
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Reply';
+        });
+    });
+  }
+
   function closeOpenBubble() {
+    STATE.replyingTo = null;
     if (!STATE.openBubble) return;
     var b = STATE.openBubble.querySelector('.__fw_bubble');
     if (b) b.remove();
     STATE.openBubble = null;
+    STATE.openBubbleRoot = null;
   }
 
   // -------- All-comments panel --------
@@ -501,7 +677,11 @@
       var group = document.createElement('section');
       group.className = '__fw_panel_group' + (isHere ? ' __fw_panel_group_here' : '');
 
-      // Header: optional "This page" eyebrow, then path + count on one row.
+      var roots = rootsOf(groups[p]);
+
+      // Header: optional "This page" eyebrow, then path + thread count.
+      // Count is THREADS (root comments), not all comments — replies are
+      // shown nested under their root in the list below.
       var head = document.createElement('header');
       head.className = '__fw_panel_path';
       var inner = '';
@@ -511,16 +691,26 @@
       inner +=
         '<div class="__fw_panel_path_row">' +
           '<span class="__fw_panel_path_text" title="' + escapeHtml(p) + '">' + escapeHtml(p) + '</span>' +
-          '<span class="__fw_panel_path_count">' + groups[p].length + '</span>' +
+          '<span class="__fw_panel_path_count" title="' + roots.length + ' thread' + (roots.length === 1 ? '' : 's') + '">' +
+            roots.length +
+          '</span>' +
         '</div>';
       head.innerHTML = inner;
       group.appendChild(head);
 
-      // Comments inside the card, separated by adjacent-sibling dividers.
       var items = document.createElement('div');
       items.className = '__fw_panel_items';
-      groups[p].forEach(function (c) {
-        items.appendChild(makePanelItem(c));
+      roots.forEach(function (root) {
+        items.appendChild(makePanelItem(root, true, null));
+        var replies = repliesOf(groups[p], root.id);
+        if (replies.length) {
+          var nest = document.createElement('div');
+          nest.className = '__fw_panel_replies';
+          replies.forEach(function (r) {
+            nest.appendChild(makePanelItem(r, false, root));
+          });
+          items.appendChild(nest);
+        }
       });
       group.appendChild(items);
 
@@ -528,17 +718,31 @@
     });
   }
 
-  function makePanelItem(c) {
+  // jumpTarget = the root whose pin to focus when this item is clicked. For
+  // root items, that's the item itself; for reply items, it's the parent root
+  // (replies share location with their root).
+  function makePanelItem(c, isRoot, parentRoot) {
     var item = document.createElement('button');
     item.type = 'button';
-    item.className = '__fw_panel_item';
-    item.title = 'Jump to this comment';
+    item.className = '__fw_panel_item' + (isRoot ? ' __fw_panel_item_root' : ' __fw_panel_item_reply');
+    item.title = isRoot ? 'Jump to this thread' : 'Jump to the thread';
     var authorName = c.author || 'Anonymous';
     var avatarColor = colorFromString(authorName);
     var avatarChar = initial(authorName);
     var relWhen = formatRelTime(c.created_at);
     var absWhen = '';
     try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
+    // Reply badge on root items so users can see at a glance which threads
+    // have follow-ups.
+    var replyBadge = '';
+    if (isRoot) {
+      var rCount = repliesOf(STATE.allPins, c.id).length;
+      if (rCount) {
+        replyBadge =
+          '<span class="__fw_panel_replycount" title="' + rCount + ' repl' +
+          (rCount === 1 ? 'y' : 'ies') + '">' + SVG_REPLY + rCount + '</span>';
+      }
+    }
     item.innerHTML =
       '<div class="__fw_panel_item_head">' +
         '<span class="__fw_avatar __fw_avatar_sm" style="background:' + avatarColor + '" aria-hidden="true">' +
@@ -547,8 +751,11 @@
         '<span class="__fw_panel_item_author">' + escapeHtml(authorName) + '</span>' +
         '<span class="__fw_panel_item_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
       '</div>' +
-      '<div class="__fw_panel_item_text">' + escapeHtml(c.text) + '</div>';
-    item.addEventListener('click', function () { jumpToComment(c); });
+      '<div class="__fw_panel_item_text">' + escapeHtml(c.text) + '</div>' +
+      replyBadge;
+    item.addEventListener('click', function () {
+      jumpToComment(isRoot ? c : (parentRoot || c));
+    });
     return item;
   }
 
@@ -780,10 +987,8 @@
       '.__fw_submit:hover { background: #1d4ed8 !important; }',
       '.__fw_submit[disabled] { opacity: 0.6 !important; cursor: default !important; background: #2563eb !important; }',
 
-      // --- Bubble (existing comment view) ---
-      '.__fw_bubble { width: 320px !important; padding: 14px 16px !important; }',
-      '.__fw_bubble_head { display: flex !important; align-items: center !important;',
-      '  gap: 8px !important; margin: 0 0 10px 0 !important; }',
+      // --- Bubble shell + shared avatar/author/when ---
+      '.__fw_bubble { width: 340px !important; padding: 14px 16px 12px !important; }',
       '.__fw_avatar { display: inline-flex !important; align-items: center !important;',
       '  justify-content: center !important; flex-shrink: 0 !important;',
       '  width: 26px !important; height: 26px !important; border-radius: 50% !important;',
@@ -794,30 +999,51 @@
       '.__fw_author { font-size: 13px !important; font-weight: 600 !important;',
       '  color: #0f172a !important; margin: 0 !important;',
       '  font-family: ' + FONT + ' !important; line-height: 1.2 !important;',
-      '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }',
-      '.__fw_dot { color: #cbd5e1 !important; font-size: 13px !important;',
-      '  font-weight: 400 !important; line-height: 1; user-select: none; }',
+      '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }',
       '.__fw_when { font-size: 12px !important; color: #94a3b8 !important;',
       '  font-family: ' + FONT + ' !important; line-height: 1.2 !important;',
-      '  cursor: default; margin-left: auto !important; }',
-      '.__fw_text_view { font-size: 14px !important; color: #0f172a !important;',
+      '  cursor: default; margin-left: auto !important; flex-shrink: 0; }',
+
+      // --- Thread (list of comment rows in the bubble) ---
+      '.__fw_thread { display: block; }',
+      '.__fw_thread_row { display: block; margin-bottom: 10px; }',
+      '.__fw_thread_row:last-child { margin-bottom: 0; }',
+      '.__fw_thread_head { display: flex !important; align-items: center !important;',
+      '  gap: 8px !important; margin: 0 0 4px 0 !important; }',
+      '.__fw_thread_text { font-size: 14px !important; color: #0f172a !important;',
       '  white-space: pre-wrap; word-wrap: break-word;',
-      '  line-height: 1.55 !important; margin: 0 !important;',
+      '  line-height: 1.55 !important; margin: 0 0 0 34px !important;',
       '  font-family: ' + FONT + ' !important; }',
-      '.__fw_bubble_foot { display: flex !important; align-items: center !important;',
-      '  justify-content: flex-end !important; margin-top: 12px !important;',
-      '  padding-top: 0 !important; border-top: 0 !important; gap: 6px !important; }',
-      '.__fw_delete { display: inline-flex !important; align-items: center !important;',
-      '  gap: 5px !important; font-size: 12px !important; font-weight: 500 !important;',
-      '  color: #94a3b8 !important; background: transparent !important;',
-      '  border: 0 !important; padding: 6px 10px !important; border-radius: 7px !important;',
+      '.__fw_thread_reply_row .__fw_thread_text { font-size: 13px !important; color: #334155 !important; margin-left: 30px !important; }',
+
+      // Replies are indented under the root with a soft left rule.
+      '.__fw_thread_replies { margin: 10px 0 10px 13px !important;',
+      '  padding: 4px 0 4px 14px !important;',
+      '  border-left: 2px solid rgba(15, 23, 42, 0.08) !important; }',
+
+      // Per-row delete (small icon button on the right of each head row).
+      '.__fw_row_delete { width: 26px !important; height: 26px !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  background: transparent !important; color: #cbd5e1 !important;',
+      '  border: 0 !important; border-radius: 6px !important; padding: 0 !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important; box-shadow: none !important;',
+      '  flex-shrink: 0; transition: background 0.12s, color 0.12s; }',
+      '.__fw_thread_row:hover .__fw_row_delete { color: #94a3b8 !important; }',
+      '.__fw_row_delete:hover { background: #fef2f2 !important; color: #dc2626 !important; }',
+      '.__fw_row_delete[disabled] { opacity: 0.5 !important; cursor: default !important; }',
+
+      // --- Reply area ---
+      '.__fw_reply_area { margin-top: 12px !important;',
+      '  padding-top: 12px !important; border-top: 1px solid rgba(15, 23, 42, 0.06) !important; }',
+      '.__fw_reply_open { display: inline-flex !important; align-items: center !important; gap: 6px !important;',
+      '  padding: 7px 12px !important; font-size: 13px !important; font-weight: 600 !important;',
+      '  background: #f1f5f9 !important; color: #334155 !important;',
+      '  border: 0 !important; border-radius: 8px !important;',
       '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
-      '  box-shadow: none !important; line-height: 1 !important;',
-      '  transition: background 0.15s, color 0.15s; }',
-      '.__fw_delete:hover { background: #fef2f2 !important; color: #dc2626 !important; }',
-      '.__fw_delete[disabled] { opacity: 0.5 !important; cursor: default !important;',
-      '  background: transparent !important; color: #94a3b8 !important; }',
-      '.__fw_delete_icon { flex-shrink: 0 !important; }',
+      '  box-shadow: none !important; transition: background 0.12s, color 0.12s; }',
+      '.__fw_reply_open:hover { background: #e2e8f0 !important; color: #0f172a !important; }',
+      '.__fw_reply_form { display: block; }',
+      '.__fw_reply_form .__fw_actions { margin-top: 4px !important; }',
 
       // --- Pin "focus" pulse (used when jumping to a pin from the panel) ---
       '@keyframes __fw_pin_pulse {',
@@ -923,6 +1149,25 @@
       '  display: -webkit-box !important; -webkit-line-clamp: 2 !important;',
       '  -webkit-box-orient: vertical !important; overflow: hidden !important;',
       '  word-wrap: break-word !important; font-family: ' + FONT + ' !important; }',
+
+      // --- Panel replies (indented under a root) ---
+      '.__fw_panel_replies { margin: 0 0 0 26px !important;',
+      '  padding-left: 14px !important;',
+      '  border-left: 2px solid rgba(15, 23, 42, 0.08) !important; }',
+      '.__fw_panel_group_here .__fw_panel_replies { border-left-color: rgba(37, 99, 235, 0.22) !important; }',
+      '.__fw_panel_item_reply { padding: 8px 14px 8px 12px !important; }',
+      '.__fw_panel_item_reply + .__fw_panel_item_reply { border-top: 1px solid rgba(15, 23, 42, 0.05) !important; }',
+      '.__fw_panel_item_reply .__fw_panel_item_text { font-size: 12px !important; margin-left: 26px !important; }',
+      '.__fw_panel_item_reply .__fw_panel_item_author { font-size: 12px !important; }',
+
+      // --- Reply count badge on a root in the panel ---
+      '.__fw_panel_replycount { display: inline-flex !important; align-items: center !important;',
+      '  gap: 4px !important; margin: 8px 0 0 30px !important;',
+      '  padding: 2px 8px !important; border-radius: 999px !important;',
+      '  background: #f1f5f9 !important; color: #64748b !important;',
+      '  font-size: 11px !important; font-weight: 600 !important;',
+      '  font-family: ' + FONT + ' !important; }',
+      '.__fw_panel_replycount .__fw_icon { width: 11px !important; height: 11px !important; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

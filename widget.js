@@ -258,6 +258,7 @@
       '<div class="__fw_popover_head">New comment</div>' +
       '<input class="__fw_name" placeholder="Your name" maxlength="120" />' +
       '<textarea class="__fw_text" placeholder="Leave a comment" rows="3" maxlength="4000"></textarea>' +
+      '<div class="__fw_form_error" hidden></div>' +
       '<div class="__fw_actions">' +
       '<button type="button" class="__fw_cancel">Cancel</button>' +
       '<button type="submit" class="__fw_submit">Send</button>' +
@@ -309,6 +310,7 @@
           console.error('[feedback-widget]', err);
           submitBtn.disabled = false;
           submitBtn.textContent = 'Send';
+          showFormError(wrap.querySelector('.__fw_form_error'), err);
         });
     });
   }
@@ -535,6 +537,7 @@
     form.innerHTML =
       '<input class="__fw_name __fw_reply_name" placeholder="Your name" maxlength="120" />' +
       '<textarea class="__fw_text __fw_reply_text" placeholder="Write a reply…" rows="2" maxlength="4000"></textarea>' +
+      '<div class="__fw_form_error" hidden></div>' +
       '<div class="__fw_actions">' +
       '<button type="button" class="__fw_cancel">Cancel</button>' +
       '<button type="submit" class="__fw_submit">Reply</button>' +
@@ -592,6 +595,7 @@
           console.error('[feedback-widget]', err);
           submitBtn.disabled = false;
           submitBtn.textContent = 'Reply';
+          showFormError(form.querySelector('.__fw_form_error'), err);
         });
     });
   }
@@ -799,6 +803,19 @@
     } catch (_) {}
   }
 
+  function showFormError(el, err) {
+    if (!el) return;
+    var msg = (err && err.message) ? String(err.message) : 'Request failed.';
+    // Friendly hint for the most common preventable failure: forgot to run
+    // the schema migration after adding threading support.
+    if (/parent_id|schema cache|PGRST204/i.test(msg)) {
+      msg = "Couldn't save: the database is missing the `parent_id` column. " +
+            "Run the latest schema.sql migration in Supabase, then try again.";
+    }
+    el.textContent = msg;
+    el.hidden = false;
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (ch) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
@@ -986,6 +1003,13 @@
       '  transition: background 0.15s; }',
       '.__fw_submit:hover { background: #1d4ed8 !important; }',
       '.__fw_submit[disabled] { opacity: 0.6 !important; cursor: default !important; background: #2563eb !important; }',
+      '.__fw_form_error { display: block; margin: 0 0 8px 0 !important;',
+      '  padding: 8px 10px !important; border-radius: 8px !important;',
+      '  background: #fef2f2 !important; color: #b91c1c !important;',
+      '  font-size: 12px !important; line-height: 1.4 !important;',
+      '  font-family: ' + FONT + ' !important;',
+      '  border: 1px solid rgba(220, 38, 38, 0.18) !important; }',
+      '.__fw_form_error[hidden] { display: none !important; }',
 
       // --- Bubble shell + shared avatar/author/when ---
       '.__fw_bubble { width: 340px !important; padding: 14px 16px 12px !important; }',

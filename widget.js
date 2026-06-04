@@ -263,7 +263,8 @@
   var toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = '__fw_toggle';
-  toggle.textContent = 'Comment';
+  toggle.title = 'Toggle comment mode (press C)';
+  toggle.innerHTML = '<span class="__fw_toggle_label">Comment</span><kbd class="__fw_kbd">C</kbd>';
   toggle.addEventListener('click', function (e) {
     e.stopPropagation();
     setActive(!STATE.active);
@@ -368,6 +369,21 @@
       e.stopPropagation();
     }
   }, true);
+
+  // "C" toggles comment mode — skipped while typing or with modifier keys
+  // pressed so it doesn't fight host shortcuts (e.g. Cmd-C copy).
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'c' && e.key !== 'C') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (t) {
+      if (t.isContentEditable) return;
+      var tag = (t.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    }
+    e.preventDefault();
+    setActive(!STATE.active);
+  });
 
   // Re-render on route changes.
   var origPush = history.pushState;
@@ -1105,6 +1121,16 @@
       '.__fw_toggle:hover { background: #1e293b !important; transform: translateY(-1px); }',
       '.__fw_toggle_on { background: #2563eb !important; box-shadow: 0 8px 24px rgba(37, 99, 235, 0.4) !important; }',
       '.__fw_toggle_on:hover { background: #1d4ed8 !important; }',
+      '.__fw_toggle_label { display: inline-block; vertical-align: middle; }',
+      // Inline keyboard-shortcut badge inside the Comment button.
+      '.__fw_kbd { display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  min-width: 18px !important; height: 18px !important; padding: 0 5px !important;',
+      '  margin-left: 8px !important; vertical-align: middle;',
+      '  background: rgba(255, 255, 255, 0.18) !important; color: rgba(255, 255, 255, 0.92) !important;',
+      '  border: 1px solid rgba(255, 255, 255, 0.28) !important; border-radius: 4px !important;',
+      '  font-size: 10px !important; font-weight: 700 !important; line-height: 1 !important;',
+      '  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;',
+      '  letter-spacing: 0 !important; box-shadow: 0 1px 0 rgba(0,0,0,0.15) !important; }',
 
       // --- Comment-mode indicators (border + top-left badge) ---
       '.__fw_mode_border, .__fw_mode_badge { display: none !important; }',

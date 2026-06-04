@@ -30,7 +30,8 @@
     replyingTo: null,    // id of the root currently being replied to (or null)
     panelOpen: false,
     allPins: [],         // every comment across the project (for the All-comments panel)
-    context: null,       // sub-context label set via window.FeedbackWidget.setContext (e.g. "modal:trial-456")
+    context: null,       // sub-context label (e.g. "dialog:Connect patient access" or "modal:trial-456")
+    contextSource: null, // 'explicit' (set via setContext) or 'auto' (set via dialog detection) or null
   };
 
   // Composite key used as `pathname` when storing/fetching. Lets a single
@@ -64,11 +65,13 @@
       console.warn('[feedback-widget] context label cannot contain "' + CONTEXT_SEP + '"');
       label = label.split(CONTEXT_SEP).join('-');
     }
+    STATE.contextSource = 'explicit';
     if (STATE.context === label) return;
     STATE.context = label;
     load();
   };
   window.FeedbackWidget.clearContext = function () {
+    STATE.contextSource = null;
     if (STATE.context === null) return;
     STATE.context = null;
     load();
@@ -76,6 +79,113 @@
   window.FeedbackWidget.getContext = function () {
     return STATE.context;
   };
+
+  // -------- Auto-detect open ARIA dialogs --------
+  // Watches the DOM for dialogs that become visible/hidden and sets context
+  // automatically. Explicit setContext calls always win — auto-detect only
+  // touches the context when contextSource is 'auto' or null. This covers
+  // most React modal libraries (Radix, Headless UI, Mantine, Chakra) and
+  // any hand-rolled modal that uses proper ARIA. Hosts can opt out of
+  // detection on a specific dialog by adding data-feedback-context-ignore.
+  var DIALOG_SELECTOR =
+    'dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]';
+
+  function isDialogVisible(el) {
+    if (!el) return false;
+    if (el.hasAttribute && el.hasAttribute('data-feedback-context-ignore')) return false;
+    if (el.tagName === 'DIALOG') return el.open === true;
+    if (el.getAttribute('aria-hidden') === 'true') return false;
+    if (el.hasAttribute('hidden')) return false;
+    var s = el.ownerDocument && el.ownerDocument.defaultView && el.ownerDocument.defaultView.getComputedStyle(el);
+    if (!s) return true;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    return true;
+  }
+
+  function findActiveDialog() {
+    var nodes = document.querySelectorAll(DIALOG_SELECTOR);
+    // Iterate in reverse — if multiple are stacked, last in document order is
+    // typically the topmost (most recently mounted).
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      if (isDialogVisible(nodes[i])) return nodes[i];
+    }
+    return null;
+  }
+
+  function dialogLabel(el) {
+    var explicit = el.getAttribute('data-feedback-context');
+    if (explicit) return explicit;
+    var aria = el.getAttribute('aria-label');
+    if (aria && aria.trim()) return aria.trim();
+    var lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      var target = document.getElementById(lb);
+      if (target && target.textContent.trim()) return target.textContent.trim().slice(0, 80);
+    }
+    if (el.id) return el.id;
+    return null; // unidentifiable; we skip auto-detect for these
+  }
+
+  var pendingDetect = null;
+  function scheduleDetect() {
+    if (pendingDetect) return;
+    pendingDetect = setTimeout(function () {
+      pendingDetect = null;
+      maybeUpdateAutoContext();
+    }, 60);
+  }
+
+  function maybeUpdateAutoContext() {
+    // Never touch an explicitly-set context.
+    if (STATE.contextSource === 'explicit') return;
+    var dialog = findActiveDialog();
+    if (dialog) {
+      var label = dialogLabel(dialog);
+      if (!label) {
+        // Unlabeled dialog — warn once, leave context alone.
+        if (!dialog.__fw_warned) {
+          dialog.__fw_warned = true;
+          console.warn(
+            '[feedback-widget] dialog detected but has no aria-label, ' +
+            'aria-labelledby, id, or data-feedback-context — comments on it ' +
+            'will be grouped with the page until you label it.',
+            dialog
+          );
+        }
+        // Treat as page-level (clear any prior auto context).
+        if (STATE.contextSource === 'auto') {
+          STATE.context = null;
+          STATE.contextSource = null;
+          load();
+        }
+        return;
+      }
+      var ctx = 'dialog:' + label;
+      if (STATE.context !== ctx) {
+        STATE.context = ctx;
+        STATE.contextSource = 'auto';
+        load();
+      }
+    } else if (STATE.contextSource === 'auto') {
+      // The dialog we were tracking is no longer visible.
+      STATE.context = null;
+      STATE.contextSource = null;
+      load();
+    }
+  }
+
+  function startDialogObserver() {
+    var target = document.body || document.documentElement;
+    new MutationObserver(scheduleDetect).observe(target, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-hidden', 'class', 'style', 'hidden', 'open', 'aria-modal'],
+    });
+    scheduleDetect();
+  }
+  if (document.body) startDialogObserver();
+  else document.addEventListener('DOMContentLoaded', startDialogObserver);
 
   // Two layers:
   //   #__fw_root  — position: fixed, holds the toggle button (and any

@@ -289,24 +289,48 @@
         closeOpenBubble();
         var bubble = document.createElement('div');
         bubble.className = '__fw_bubble';
-        var when = '';
-        try { when = new Date(c.created_at).toLocaleString(); } catch (_) {}
+        var authorName = c.author || 'Anonymous';
+        var absWhen = '';
+        try { absWhen = new Date(c.created_at).toLocaleString(); } catch (_) {}
+        var relWhen = formatRelTime(c.created_at);
+        var avatarColor = colorFromString(authorName);
+        var avatarChar = initial(authorName);
+        // Trash icon (Feather Icons "trash-2", MIT) — strokes inherit currentColor
+        // from .__fw_delete, so hover state tints the icon too.
+        var trashSvg =
+          '<svg class="__fw_delete_icon" width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
+          'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<polyline points="3 6 5 6 21 6"></polyline>' +
+          '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>' +
+          '<path d="M10 11v6"></path><path d="M14 11v6"></path>' +
+          '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>' +
+          '</svg>';
         bubble.innerHTML =
-          '<div class="__fw_author">' + escapeHtml(c.author || 'Anonymous') + '</div>' +
+          '<div class="__fw_bubble_head">' +
+            '<span class="__fw_avatar" style="background:' + avatarColor + '" aria-hidden="true">' +
+              escapeHtml(avatarChar) +
+            '</span>' +
+            '<span class="__fw_author">' + escapeHtml(authorName) + '</span>' +
+            '<span class="__fw_dot" aria-hidden="true">·</span>' +
+            '<span class="__fw_when" title="' + escapeHtml(absWhen) + '">' + escapeHtml(relWhen) + '</span>' +
+          '</div>' +
           '<div class="__fw_text_view">' + escapeHtml(c.text) + '</div>' +
           '<div class="__fw_bubble_foot">' +
-          '<span class="__fw_meta">' + escapeHtml(when) + '</span>' +
-          '<button type="button" class="__fw_delete" title="Delete comment">Delete</button>' +
+            '<button type="button" class="__fw_delete" title="Delete comment">' +
+              trashSvg +
+              '<span class="__fw_delete_label">Delete</span>' +
+            '</button>' +
           '</div>';
         wrap.appendChild(bubble);
         STATE.openBubble = wrap;
 
         var delBtn = bubble.querySelector('.__fw_delete');
+        var delLabel = delBtn.querySelector('.__fw_delete_label');
         delBtn.addEventListener('click', function (ev) {
           ev.stopPropagation();
           if (!window.confirm('Delete this comment?')) return;
           delBtn.disabled = true;
-          delBtn.textContent = 'Deleting…';
+          delLabel.textContent = 'Deleting…';
           fetch(apiBase + '/api/comments?id=' + encodeURIComponent(c.id), {
             method: 'DELETE',
           })
@@ -320,7 +344,7 @@
             .catch(function (err) {
               console.error('[feedback-widget]', err);
               delBtn.disabled = false;
-              delBtn.textContent = 'Delete';
+              delLabel.textContent = 'Delete';
             });
         });
       });
@@ -340,6 +364,43 @@
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (ch) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
     });
+  }
+
+  function initial(name) {
+    var s = String(name || '').trim();
+    return s ? s.charAt(0).toUpperCase() : '?';
+  }
+
+  // djb2-style hash → HSL hue. Same author name always gets the same color.
+  function colorFromString(s) {
+    var str = String(s || '');
+    var hash = 5381;
+    for (var i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    var hue = Math.abs(hash) % 360;
+    return 'hsl(' + hue + ', 62%, 50%)';
+  }
+
+  function formatRelTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    var diff = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (diff < 5) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    var m = Math.floor(diff / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    var days = Math.floor(h / 24);
+    if (days < 7) return days + 'd ago';
+    try {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch (_) {
+      return d.toDateString();
+    }
   }
 
   function injectStyles() {
@@ -459,24 +520,43 @@
       '.__fw_submit[disabled] { opacity: 0.6 !important; cursor: default !important; background: #2563eb !important; }',
 
       // --- Bubble (existing comment view) ---
-      '.__fw_author { font-size: 12px !important; font-weight: 600 !important;',
-      '  color: #0f172a !important; margin: 0 0 4px 0 !important;',
-      '  font-family: ' + FONT + ' !important; }',
-      '.__fw_text_view { font-size: 13px !important; color: #334155 !important;',
+      '.__fw_bubble { width: 320px !important; padding: 14px 16px !important; }',
+      '.__fw_bubble_head { display: flex !important; align-items: center !important;',
+      '  gap: 8px !important; margin: 0 0 10px 0 !important; }',
+      '.__fw_avatar { display: inline-flex !important; align-items: center !important;',
+      '  justify-content: center !important; flex-shrink: 0 !important;',
+      '  width: 26px !important; height: 26px !important; border-radius: 50% !important;',
+      '  color: #ffffff !important; font-size: 12px !important; font-weight: 700 !important;',
+      '  letter-spacing: 0 !important; font-family: ' + FONT + ' !important;',
+      '  text-transform: uppercase !important;',
+      '  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15) !important; }',
+      '.__fw_author { font-size: 13px !important; font-weight: 600 !important;',
+      '  color: #0f172a !important; margin: 0 !important;',
+      '  font-family: ' + FONT + ' !important; line-height: 1.2 !important;',
+      '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }',
+      '.__fw_dot { color: #cbd5e1 !important; font-size: 13px !important;',
+      '  font-weight: 400 !important; line-height: 1; user-select: none; }',
+      '.__fw_when { font-size: 12px !important; color: #94a3b8 !important;',
+      '  font-family: ' + FONT + ' !important; line-height: 1.2 !important;',
+      '  cursor: default; margin-left: auto !important; }',
+      '.__fw_text_view { font-size: 14px !important; color: #0f172a !important;',
       '  white-space: pre-wrap; word-wrap: break-word;',
-      '  line-height: 1.5 !important; margin: 0 !important;',
+      '  line-height: 1.55 !important; margin: 0 !important;',
       '  font-family: ' + FONT + ' !important; }',
       '.__fw_bubble_foot { display: flex !important; align-items: center !important;',
-      '  justify-content: space-between !important; margin-top: 10px !important; gap: 6px !important;',
-      '  padding-top: 8px !important; border-top: 1px solid rgba(15, 23, 42, 0.06) !important; }',
-      '.__fw_meta { font-size: 11px !important; color: #94a3b8 !important;',
-      '  font-family: ' + FONT + ' !important; }',
-      '.__fw_delete { font-size: 11px !important; font-weight: 500 !important;',
-      '  color: #b91c1c !important; background: transparent !important;',
-      '  border: 0 !important; padding: 4px 8px !important; border-radius: 6px !important;',
-      '  cursor: pointer !important; font-family: ' + FONT + ' !important; box-shadow: none !important; }',
-      '.__fw_delete:hover { background: #fee2e2 !important; }',
-      '.__fw_delete[disabled] { opacity: 0.6 !important; cursor: default !important; }',
+      '  justify-content: flex-end !important; margin-top: 12px !important;',
+      '  padding-top: 0 !important; border-top: 0 !important; gap: 6px !important; }',
+      '.__fw_delete { display: inline-flex !important; align-items: center !important;',
+      '  gap: 5px !important; font-size: 12px !important; font-weight: 500 !important;',
+      '  color: #94a3b8 !important; background: transparent !important;',
+      '  border: 0 !important; padding: 6px 10px !important; border-radius: 7px !important;',
+      '  cursor: pointer !important; font-family: ' + FONT + ' !important;',
+      '  box-shadow: none !important; line-height: 1 !important;',
+      '  transition: background 0.15s, color 0.15s; }',
+      '.__fw_delete:hover { background: #fef2f2 !important; color: #dc2626 !important; }',
+      '.__fw_delete[disabled] { opacity: 0.5 !important; cursor: default !important;',
+      '  background: transparent !important; color: #94a3b8 !important; }',
+      '.__fw_delete_icon { flex-shrink: 0 !important; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

@@ -24,6 +24,21 @@ async function sb(path, init = {}) {
   return { status: r.status, body: body ? JSON.parse(body) : null };
 }
 
+// Send a JSON response back to the client. If the upstream call failed,
+// flatten Supabase's error shape ({code, message, hint, details}) into
+// {error, code} so the widget always knows the real reason without having
+// to know Supabase internals.
+function reply(res, sbResult) {
+  if (sbResult.status >= 400) {
+    const b = sbResult.body || {};
+    const msg = b.message || b.error || b.hint || 'database request failed';
+    res.status(sbResult.status).json({ error: msg, code: b.code || null });
+    return;
+  }
+  const out = Array.isArray(sbResult.body) ? sbResult.body[0] : sbResult.body;
+  res.status(sbResult.status).json(out);
+}
+
 module.exports = async function handler(req, res) {
   setCors(res);
 
@@ -53,8 +68,8 @@ module.exports = async function handler(req, res) {
       // path is optional — omit to fetch every comment across the project
       // (used by the widget's "All comments" panel).
       if (path) params.set('pathname', `eq.${path}`);
-      const { status, body } = await sb(`comments?${params}`);
-      res.status(status).json(body);
+      const result = await sb(`comments?${params}`);
+      reply(res, result);
       return;
     }
 
@@ -88,12 +103,12 @@ module.exports = async function handler(req, res) {
         }
         row.parent_id = parent_id;
       }
-      const { status, body } = await sb('comments', {
+      const result = await sb('comments', {
         method: 'POST',
         headers: { Prefer: 'return=representation' },
         body: JSON.stringify(row),
       });
-      res.status(status).json(Array.isArray(body) ? body[0] : body);
+      reply(res, result);
       return;
     }
 
@@ -108,8 +123,12 @@ module.exports = async function handler(req, res) {
         res.status(400).json({ error: 'id must be a UUID' });
         return;
       }
-      const { status } = await sb(`comments?id=eq.${id}`, { method: 'DELETE' });
-      res.status(status === 204 ? 200 : status).json({ ok: status === 204, id });
+      const result = await sb(`comments?id=eq.${id}`, { method: 'DELETE' });
+      if (result.status >= 400) {
+        reply(res, result);
+        return;
+      }
+      res.status(result.status === 204 ? 200 : result.status).json({ ok: true, id });
       return;
     }
 

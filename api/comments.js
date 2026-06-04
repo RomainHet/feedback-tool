@@ -1,4 +1,4 @@
-// Vercel serverless function — handles both GET and POST on /api/comments.
+// Vercel serverless function — handles GET, POST, and DELETE on /api/comments.
 // Talks to Supabase via the PostgREST endpoint using the service-role key.
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -6,7 +6,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'content-type');
 }
 
@@ -87,7 +87,23 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    res.setHeader('Allow', 'GET, POST, OPTIONS');
+    if (req.method === 'DELETE') {
+      const id = req.query.id;
+      if (!id) {
+        res.status(400).json({ error: 'id is required' });
+        return;
+      }
+      // Lightweight UUID sanity check — prevents accidental wildcard deletes.
+      if (!/^[0-9a-f-]{36}$/i.test(id)) {
+        res.status(400).json({ error: 'id must be a UUID' });
+        return;
+      }
+      const { status } = await sb(`comments?id=eq.${id}`, { method: 'DELETE' });
+      res.status(status === 204 ? 200 : status).json({ ok: status === 204, id });
+      return;
+    }
+
+    res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS');
     res.status(405).json({ error: 'method not allowed' });
   } catch (err) {
     res.status(500).json({ error: String(err && err.message || err) });

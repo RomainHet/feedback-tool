@@ -30,11 +30,24 @@
 
   injectStyles();
 
+  // Two layers:
+  //   #__fw_root  — position: fixed, holds the toggle button (and any
+  //                 floating UI that must stay in the viewport corner).
+  //   #__fw_pins  — position: absolute on body, holds pins + composer so they
+  //                 scroll with document content.
   var root = document.createElement('div');
   root.id = '__fw_root';
-  // No pointer-events on the root so the page stays interactive; children
-  // re-enable pointer events individually.
   document.documentElement.appendChild(root);
+
+  var pinLayer = document.createElement('div');
+  pinLayer.id = '__fw_pins';
+  // Append once body exists.
+  function attachPinLayer() {
+    if (pinLayer.parentNode) return;
+    (document.body || document.documentElement).appendChild(pinLayer);
+  }
+  if (document.body) attachPinLayer();
+  else document.addEventListener('DOMContentLoaded', attachPinLayer);
 
   var toggle = document.createElement('button');
   toggle.type = 'button';
@@ -53,11 +66,18 @@
     function (e) {
       if (!STATE.active) return;
       if (e.target.closest('#__fw_root')) return;
+      if (e.target.closest('#__fw_pins')) return;
       if (STATE.pending) return;
       e.preventDefault();
       e.stopPropagation();
-      var xPct = (e.clientX / window.innerWidth) * 100;
-      var yPct = (e.clientY / window.innerHeight) * 100;
+      var doc = document.documentElement;
+      // pageX/pageY include scroll offset → coordinates within the document,
+      // not the viewport. Normalize against scrollWidth/scrollHeight so the
+      // stored values are responsive to page-size changes between sessions.
+      var docW = Math.max(doc.scrollWidth, 1);
+      var docH = Math.max(doc.scrollHeight, 1);
+      var xPct = (e.pageX / docW) * 100;
+      var yPct = (e.pageY / docH) * 100;
       openComposer(xPct, yPct);
     },
     true
@@ -79,7 +99,14 @@
     return r;
   };
   window.addEventListener('popstate', load);
+  // Re-render on size changes so pins follow content reflow. Also re-render
+  // after `load` (images, fonts) since they often grow the document.
   window.addEventListener('resize', renderPins);
+  window.addEventListener('load', function () {
+    renderPins();
+    // Catch late-loading content (async-rendered sections, lazy images).
+    setTimeout(renderPins, 600);
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', load);
@@ -97,12 +124,22 @@
     }
   }
 
+  // Convert a document-percentage coordinate to absolute pixels for current
+  // document size. Re-run on resize / late layout shifts.
+  function pctToPx(xPct, yPct) {
+    var doc = document.documentElement;
+    return {
+      x: (Number(xPct) / 100) * doc.scrollWidth,
+      y: (Number(yPct) / 100) * doc.scrollHeight,
+    };
+  }
+
   function openComposer(xPct, yPct) {
     closeOpenBubble();
+    attachPinLayer();
     var wrap = document.createElement('div');
     wrap.className = '__fw_placed __fw_pending';
-    wrap.style.left = xPct + '%';
-    wrap.style.top = yPct + '%';
+    positionWrap(wrap, xPct, yPct);
     wrap.innerHTML =
       '<div class="__fw_pin __fw_pin_new">+</div>' +
       '<form class="__fw_popover">' +
@@ -113,7 +150,7 @@
       '<button type="submit" class="__fw_submit">Send</button>' +
       '</div>' +
       '</form>';
-    root.appendChild(wrap);
+    pinLayer.appendChild(wrap);
     STATE.pending = { el: wrap, x: xPct, y: yPct };
     var nameInput = wrap.querySelector('.__fw_name');
     var textInput = wrap.querySelector('.__fw_text');
@@ -182,16 +219,22 @@
       });
   }
 
+  function positionWrap(wrap, xPct, yPct) {
+    var p = pctToPx(xPct, yPct);
+    wrap.style.left = p.x + 'px';
+    wrap.style.top = p.y + 'px';
+  }
+
   function renderPins() {
+    if (!pinLayer.parentNode) attachPinLayer();
     // Remove existing rendered pin wrappers (but not the pending composer).
-    Array.prototype.slice.call(root.querySelectorAll('.__fw_placed:not(.__fw_pending)'))
+    Array.prototype.slice.call(pinLayer.querySelectorAll('.__fw_placed:not(.__fw_pending)'))
       .forEach(function (n) { n.remove(); });
 
     STATE.pins.forEach(function (c, i) {
       var wrap = document.createElement('div');
       wrap.className = '__fw_placed';
-      wrap.style.left = Number(c.x_pct) + '%';
-      wrap.style.top = Number(c.y_pct) + '%';
+      positionWrap(wrap, c.x_pct, c.y_pct);
       wrap.dataset.id = c.id;
 
       var pin = document.createElement('button');
@@ -212,12 +255,38 @@
         bubble.innerHTML =
           '<div class="__fw_author">' + escapeHtml(c.author || 'Anonymous') + '</div>' +
           '<div class="__fw_text_view">' + escapeHtml(c.text) + '</div>' +
-          '<div class="__fw_meta">' + escapeHtml(when) + '</div>';
+          '<div class="__fw_bubble_foot">' +
+          '<span class="__fw_meta">' + escapeHtml(when) + '</span>' +
+          '<button type="button" class="__fw_delete" title="Delete comment">Delete</button>' +
+          '</div>';
         wrap.appendChild(bubble);
         STATE.openBubble = wrap;
+
+        var delBtn = bubble.querySelector('.__fw_delete');
+        delBtn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          if (!window.confirm('Delete this comment?')) return;
+          delBtn.disabled = true;
+          delBtn.textContent = 'Deleting…';
+          fetch(apiBase + '/api/comments?id=' + encodeURIComponent(c.id), {
+            method: 'DELETE',
+          })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+              if (!res.ok) throw new Error(res.j && res.j.error || 'delete failed');
+              STATE.pins = STATE.pins.filter(function (p) { return p.id !== c.id; });
+              closeOpenBubble();
+              renderPins();
+            })
+            .catch(function (err) {
+              console.error('[feedback-widget]', err);
+              delBtn.disabled = false;
+              delBtn.textContent = 'Delete';
+            });
+        });
       });
       wrap.appendChild(pin);
-      root.appendChild(wrap);
+      pinLayer.appendChild(wrap);
     });
   }
 
@@ -237,14 +306,15 @@
   function injectStyles() {
     var css = [
       '#__fw_root { position: fixed; inset: 0; pointer-events: none; z-index: 2147483600; }',
-      '#__fw_root * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }',
+      '#__fw_root *, #__fw_pins * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }',
+      '#__fw_pins { position: absolute; top: 0; left: 0; width: 0; height: 0; pointer-events: none; z-index: 2147483599; }',
       '.__fw_toggle { position: fixed; right: 16px; bottom: 16px; pointer-events: auto;',
       '  background: #111; color: #fff; border: 0; border-radius: 999px;',
       '  padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer;',
       '  box-shadow: 0 4px 14px rgba(0,0,0,0.18); }',
       '.__fw_toggle_on { background: #2563eb; }',
       'html.__fw_commenting, html.__fw_commenting body { cursor: crosshair !important; }',
-      '.__fw_placed { position: fixed; transform: translate(-50%, -100%); pointer-events: auto; z-index: 2147483601; }',
+      '.__fw_placed { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; z-index: 2147483601; }',
       '.__fw_pin { width: 28px; height: 28px; border-radius: 999px 999px 999px 2px;',
       '  background: #2563eb; color: #fff; border: 2px solid #fff;',
       '  font-size: 12px; font-weight: 700; cursor: pointer;',
@@ -267,7 +337,13 @@
       '.__fw_submit[disabled] { opacity: 0.6; cursor: default; }',
       '.__fw_author { font-size: 12px; font-weight: 600; margin-bottom: 4px; }',
       '.__fw_text_view { font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }',
-      '.__fw_meta { font-size: 11px; color: #6b7280; margin-top: 6px; }',
+      '.__fw_bubble_foot { display: flex; align-items: center; justify-content: space-between;',
+      '  margin-top: 6px; gap: 6px; }',
+      '.__fw_meta { font-size: 11px; color: #6b7280; }',
+      '.__fw_delete { font-size: 11px; color: #b91c1c; background: transparent;',
+      '  border: 0; padding: 2px 6px; border-radius: 4px; cursor: pointer; }',
+      '.__fw_delete:hover { background: #fee2e2; }',
+      '.__fw_delete[disabled] { opacity: 0.6; cursor: default; }',
     ].join('\n');
     var s = document.createElement('style');
     s.textContent = css;

@@ -37,6 +37,7 @@ for the prototype. Two routes share `/api/comments` — one file, dispatching on
 - `POST /api/comments` with JSON body
   `{ project_id, pathname, x_pct, y_pct, text, author? }` → returns the
   inserted row.
+- `DELETE /api/comments?id=<uuid>` → deletes a row by id.
 
 CORS is wide-open (`*`) so the widget works from any origin.
 
@@ -45,10 +46,21 @@ CORS is wide-open (`*`) so the widget works from any origin.
 - Floating "Comment" button toggles comment mode.
 - In comment mode, any click on the page drops a pin and opens a small popover
   for name + text. Submit → POST → pin becomes a numbered bubble.
-- Pin coordinates are stored as percentages of the viewport and rendered with
-  `position: fixed`, so pins stay anchored to where they were dropped relative
-  to the window (not the document).
+- Pin coordinates are stored as percentages of the **document** (not viewport)
+  and rendered with `position: absolute`, so pins scroll with page content
+  instead of staying glued to the viewport. They re-render on resize and
+  shortly after `load` to follow layout shifts from late-loading content.
 - Existing pins are fetched on load and on every route change. `pushState` is
   monkey-patched and `popstate` is listened to.
 - Only pins whose `pathname` matches `location.pathname` are shown.
 - Click a pin to expand its comment; click again or click elsewhere to close.
+- The bubble has a small **Delete** action (with a confirm dialog).
+
+### Anchoring caveat
+
+Pins anchor to **document coordinates**, not to a specific DOM element. If the
+page layout changes between sessions (a list grows, a hero image loads at a
+different size, the user is on a different screen size), pins can drift from
+the element they were meant to annotate. True element-anchoring is a much
+larger change (requires capturing a stable CSS-path or content-hash at drop
+time, then finding the element again at render time).

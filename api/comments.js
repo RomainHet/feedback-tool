@@ -28,14 +28,22 @@ async function sb(path, init = {}) {
 // flatten Supabase's error shape ({code, message, hint, details}) into
 // {error, code} so the widget always knows the real reason without having
 // to know Supabase internals.
-function reply(res, sbResult) {
+//
+// Pass {unwrapFirst: true} for endpoints where Supabase returns a
+// one-element array but the client wants the object (POST with
+// Prefer: return=representation). Default is to pass arrays through
+// unchanged — necessary for GET, where the array IS the answer.
+function reply(res, sbResult, opts) {
   if (sbResult.status >= 400) {
     const b = sbResult.body || {};
     const msg = b.message || b.error || b.hint || 'database request failed';
     res.status(sbResult.status).json({ error: msg, code: b.code || null });
     return;
   }
-  const out = Array.isArray(sbResult.body) ? sbResult.body[0] : sbResult.body;
+  let out = sbResult.body;
+  if (opts && opts.unwrapFirst && Array.isArray(out)) {
+    out = out[0];
+  }
   res.status(sbResult.status).json(out);
 }
 
@@ -108,7 +116,7 @@ module.exports = async function handler(req, res) {
         headers: { Prefer: 'return=representation' },
         body: JSON.stringify(row),
       });
-      reply(res, result);
+      reply(res, result, { unwrapFirst: true });
       return;
     }
 
